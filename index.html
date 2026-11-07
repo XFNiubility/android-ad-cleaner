@@ -3,54 +3,83 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
-<title>安卓去广告</title>
-<meta name="description" content="关掉国产安卓手机的开屏广告、热搜、资讯推荐和营销推送。Mac / Windows 客户端，开源免费。">
-<meta property="og:title" content="安卓去广告">
-<meta property="og:description" content="插上数据线，在电脑上点几下，关掉手机里的广告。">
+<title>肉呆去广告</title>
+<meta name="description" content="关掉国产安卓手机的开屏广告、热搜、资讯推荐和营销推送。安卓 App 与 Mac / Windows 客户端，开源免费。">
+<meta property="og:title" content="肉呆去广告">
+<meta property="og:description" content="手机 App 里点一下，或用数据线连电脑，关掉手机里的广告。">
 <meta name="theme-color" content="#EBEFEC">
-<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Crect x='4' y='16' width='56' height='32' rx='16' fill='%239AA7A0'/%3E%3Ccircle cx='20' cy='32' r='12' fill='white'/%3E%3C/svg%3E">
+<link rel="icon" href="images/roudai-icon.png">
 <style>
-/* 布局：首屏左侧是带开关的标题，右侧是一块「广告与推荐」设置面板；下面各节沿用设置列表的行与开关 */
+/* site-css:start */
+/* 官网两页（index.html / android-tutorial.html）共用的调色板、深色档、顶栏与页脚（#653）。
+   单一来源：tool/gen_site_css.py 把它渲染进两页 <style> 的 site-css 标记区，页面不引用本文件——
+   GitHub Pages 与机主服务器上的单文件副本都只认页面里内联的那份。
+   改完跑 python tool/gen_site_css.py；漏跑由 tests/test_doc_consistency.py 抓。
+   两页在共享样式上的差异值集中在下面的 :root.reading 一条里：教程页是阅读页，版心与栏高比首页收紧一档。
+   本文件只管共享部分；页面专属样式（含两页各自的 h2 / .lead 字号与宽度、页脚链接下划线）留在各自 <style> 里。 */
+
 :root {
-  --paper: #EBEFEC;
-  --panel: #F8FAF8;
-  --ink: #0F1B16;
-  --ink-2: #4B5B53;
-  --line: #CDD6D0;
-  --cobalt: #2347D6;
-  --on-cobalt: #FFFFFF;
-  --amber: #E8962A;
-  --off: #A3AFA8;
-  --knob: #FFFFFF;
-  --code: #E2E8E4;
+  --paper: #EBEFEC; --panel: #F8FAF8; --ink: #0F1B16; --ink-2: #4B5B53; --line: #CDD6D0;
+  --cobalt: #2347D6; --on-cobalt: #FFFFFF; --amber: #E8962A; --off: #A3AFA8; --knob: #FFFFFF; --code: #E2E8E4;
   --sans: -apple-system, BlinkMacSystemFont, "PingFang SC", "HarmonyOS Sans SC", "MiSans", "Microsoft YaHei UI", "Microsoft YaHei", "Noto Sans SC", sans-serif;
   --mono: "SF Mono", ui-monospace, "JetBrains Mono", Menlo, Consolas, monospace;
+  --shadow: 0 30px 60px -36px rgba(15, 27, 22, .35);
   --gutter: max(20px, env(safe-area-inset-left, 0px));
   --gutter-r: max(20px, env(safe-area-inset-right, 0px));
+  --top-h: 64px; --top-gap: 28px; --nav-gap: 22px;
+  --top-rule: 1px solid transparent;
 }
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
     --paper: #0C1310; --panel: #131C18; --ink: #E3ECE6; --ink-2: #9AAEA4; --line: #25332C;
     --cobalt: #7D96FF; --on-cobalt: #0C1310; --amber: #F0AC48; --off: #3B4B43; --knob: #E3ECE6; --code: #18231E;
+    --shadow: 0 30px 60px -36px rgba(0, 0, 0, .7);
     color-scheme: dark;
   }
 }
 :root[data-theme="dark"] {
   --paper: #0C1310; --panel: #131C18; --ink: #E3ECE6; --ink-2: #9AAEA4; --line: #25332C;
   --cobalt: #7D96FF; --on-cobalt: #0C1310; --amber: #F0AC48; --off: #3B4B43; --knob: #E3ECE6; --code: #18231E;
+  --shadow: 0 30px 60px -36px rgba(0, 0, 0, .7);
   color-scheme: dark;
 }
+:root.reading {
+  --gutter: max(16px, env(safe-area-inset-left, 0px));
+  --gutter-r: max(16px, env(safe-area-inset-right, 0px));
+  --top-h: 60px; --top-gap: 20px; --nav-gap: 20px;
+  --top-rule: 0;
+}
+
 * { box-sizing: border-box; }
-html { scroll-behavior: smooth; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
-body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.7 var(--sans); -webkit-font-smoothing: antialiased; }
+html { scroll-behavior: smooth; -webkit-text-size-adjust: 100%; padding-top: env(safe-area-inset-top, 0px); padding-bottom: env(safe-area-inset-bottom, 0px); }
+body { margin: 0; background: var(--paper); color: var(--ink); font: 16px/1.7 var(--sans); -webkit-font-smoothing: antialiased; -webkit-tap-highlight-color: transparent; }
 a { color: inherit; }
-img { max-width: 100%; }
+img, video { max-width: 100%; display: block; }
 .wrap { max-width: 1160px; margin: 0 auto; padding-left: var(--gutter); padding-right: var(--gutter-r); }
 h1, h2, h3 { text-wrap: balance; margin: 0; }
-h2 { font-size: clamp(30px, 4.2vw, 46px); line-height: 1.12; font-weight: 600; letter-spacing: -0.02em; }
-.lead { color: var(--ink-2); font-size: 17px; max-width: 38em; margin: 14px 0 0; }
 .label { font-size: 12px; letter-spacing: .14em; color: var(--ink-2); font-weight: 600; }
 :focus-visible { outline: 2px solid var(--cobalt); outline-offset: 3px; border-radius: 6px; }
+
+/* 顶栏 */
+.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--paper); background: color-mix(in srgb, var(--paper) 86%, transparent);
+       backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px); border-bottom: var(--top-rule); }
+body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 21; background: var(--paper); }
+.top .wrap { display: flex; align-items: center; gap: var(--top-gap); height: var(--top-h); }
+.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; font-size: 17px; white-space: nowrap; }
+.brand .logo { width: 28px; height: 28px; border-radius: 8px; flex: none; }
+.nav { display: flex; gap: var(--nav-gap); margin-left: auto; font-size: 15px; }
+.nav a { text-decoration: none; color: var(--ink-2); white-space: nowrap; touch-action: manipulation; }
+@media (hover: hover) and (pointer: fine) { .nav a:hover { color: var(--ink); } }
+
+/* 页脚 */
+footer { border-top: 1px solid var(--line); padding-block: 40px 56px; font-size: 14px; color: var(--ink-2); }
+footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
+footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+/* site-css:end */
+
+/* 布局：首屏左侧是带开关的标题，右侧是一块「广告与推荐」设置面板；下面各节沿用设置列表的行与开关 */
+h2 { font-size: clamp(30px, 4.2vw, 46px); line-height: 1.12; font-weight: 600; letter-spacing: -0.02em; }
+.lead { color: var(--ink-2); font-size: 17px; max-width: 38em; margin: 14px 0 0; }
 
 /* 开关 */
 .sw { --w: 46px; --h: 28px; display: inline-block; position: relative; flex: none; width: var(--w); height: var(--h); border: 0; padding: 0;
@@ -69,20 +98,12 @@ h2 { font-size: clamp(30px, 4.2vw, 46px); line-height: 1.12; font-weight: 600; l
   .flip, .flip::after, .sw, .sw::after { animation: none !important; transition: none !important; }
 }
 
-/* 顶栏 */
-.top { position: sticky; top: env(safe-area-inset-top, 0px); z-index: 20; background: var(--paper); background: color-mix(in srgb, var(--paper) 86%, transparent);
-       backdrop-filter: saturate(1.4) blur(14px); -webkit-backdrop-filter: saturate(1.4) blur(14px); border-bottom: 1px solid transparent; }
-body::before { content: ""; position: fixed; inset: 0 0 auto; height: env(safe-area-inset-top, 0px); z-index: 21; background: var(--paper); }
-.top .wrap { display: flex; align-items: center; gap: 28px; height: 64px; }
-.brand { display: flex; align-items: center; gap: 10px; font-weight: 600; text-decoration: none; font-size: 17px; }
-.brand .sw { --w: 30px; --h: 18px; pointer-events: none; }
-.brand .sw::after { top: 2px; left: 2px; width: 14px; height: 14px; }
-.nav { display: flex; gap: 22px; margin-left: auto; font-size: 15px; }
-.nav a { text-decoration: none; color: var(--ink-2); }
-.nav a:hover { color: var(--ink); }
+/* 顶栏多出来的两个入口：桌面宽档的 GitHub 胶囊与窄档的「教程」 */
 .gh { display: inline-flex; align-items: center; gap: 8px; font-size: 14px; text-decoration: none; border: 1px solid var(--line);
       padding: 6px 12px; border-radius: 999px; }
 .gh svg { width: 16px; height: 16px; fill: currentColor; }
+.tut { display: none; font-size: 15px; text-decoration: none; color: var(--ink-2); white-space: nowrap; }
+.tut:hover { color: var(--ink); }
 
 /* 首屏 */
 .hero { padding-block: 72px 56px; }
@@ -119,6 +140,8 @@ section { padding-block: 92px; border-top: 1px solid var(--line); }
 
 /* 下载 */
 .dl { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
+/* 有五个下载项（加了手机版）时均分一行，免得末行只剩一张卡占 1/4、右边空三格 */
+@media (min-width: 981px) { .dl:has(> :nth-child(5)) { grid-template-columns: repeat(5, minmax(0, 1fr)); } }
 .card { background: var(--panel); border: 1px solid var(--line); border-radius: 20px; padding: 22px; display: flex; flex-direction: column; gap: 6px; min-width: 0; }
 .card.mine { border-color: var(--cobalt); box-shadow: 0 0 0 1px var(--cobalt) inset; }
 .card .os { font-size: 12px; letter-spacing: .1em; color: var(--ink-2); font-weight: 600; }
@@ -160,13 +183,15 @@ details.sums summary { cursor: pointer; }
 .what .sw { margin-top: 4px; }
 
 /* 怎么用 */
-.steps { display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); gap: 0; padding: 0; margin: 0; list-style: none; counter-reset: s; }
-.steps li { padding: 0 22px 0 0; counter-increment: s; position: relative; }
-.steps li::before { content: counter(s); display: block; font: 600 54px/1 var(--sans); letter-spacing: -0.04em; color: var(--off); font-variant-numeric: tabular-nums; }
-.steps li::after { content: ""; position: absolute; top: 27px; left: 44px; right: 14px; height: 1px; background: var(--line); }
-.steps li:last-child::after { display: none; }
-.steps b { display: block; font-size: 18px; font-weight: 600; margin-top: 18px; }
+.steps { display: grid; gap: 26px; padding: 0; margin: 0; list-style: none; counter-reset: s; }
+.steps li { display: grid; grid-template-columns: 64px minmax(0, 1fr); counter-increment: s; }
+.steps li::before { content: counter(s); grid-row: span 2; display: block; font: 600 44px/1 var(--sans); letter-spacing: -0.04em; color: var(--off); font-variant-numeric: tabular-nums; }
+.steps b { display: block; font-size: 18px; font-weight: 600; margin-top: 2px; }
 .steps p { margin: 6px 0 0; font-size: 14px; color: var(--ink-2); }
+/* 两条用法路径：手机版不连电脑，电脑版走数据线 */
+.paths { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 40px; }
+.path h3 { margin: 0 0 22px; font-size: 20px; }
+.path h3 span { display: block; margin-top: 6px; font-size: 14px; font-weight: 400; letter-spacing: 0; color: var(--ink-2); }
 
 /* 边界 */
 .edge { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; }
@@ -194,9 +219,7 @@ tr:last-child td { border-bottom: 0; }
 .faq details[open] summary::after { content: "−"; }
 .faq p { margin: 10px 0 0; color: var(--ink-2); font-size: 15px; }
 
-footer { border-top: 1px solid var(--line); padding-block: 40px 56px; font-size: 14px; color: var(--ink-2); }
-footer .wrap { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 16px; }
-footer nav { display: flex; flex-wrap: wrap; gap: 8px 22px; }
+/* 页脚链接：首页不带下划线，教程页保留（阅读页要能认出可点的位置） */
 footer a { text-decoration: none; }
 footer a:hover { color: var(--ink); }
 
@@ -204,14 +227,11 @@ footer a:hover { color: var(--ink); }
   .hero .wrap, .ai, .head { grid-template-columns: minmax(0, 1fr); }
   .head { gap: 14px; }
   .dl { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .steps { grid-template-columns: minmax(0, 1fr); gap: 26px; }
-  .steps li { display: grid; grid-template-columns: 64px minmax(0, 1fr); padding: 0; }
-  .steps li::before { grid-row: span 2; font-size: 44px; }
-  .steps li::after { display: none; }
-  .steps b { margin-top: 2px; }
+  .paths { grid-template-columns: minmax(0, 1fr); gap: 32px; }
   .edge { grid-template-columns: repeat(2, minmax(0, 1fr)); }
   .nav { display: none; }
-  .gh { margin-left: auto; }
+  .tut { display: inline-block; margin-left: auto; }
+  .gh { margin-left: 16px; }
 }
 @media (max-width: 620px) {
   .hero { padding-block: 40px 40px; }
@@ -225,14 +245,16 @@ footer a:hover { color: var(--ink); }
 
 <header class="top">
   <div class="wrap">
-    <a class="brand" href="#"><span class="sw" aria-hidden="true"></span>安卓去广告</a>
+    <a class="brand" href="#"><img class="logo" src="images/roudai-icon.png" alt="">肉呆去广告</a>
     <nav class="nav" aria-label="页面导航">
       <a href="#download">下载</a>
+      <a href="android-tutorial.html">手机版教程</a>
       <a href="#ai">交给 AI</a>
       <a href="#what">能关什么</a>
       <a href="#devices">机型</a>
       <a href="#faq">常见问题</a>
     </nav>
+    <a class="tut" href="android-tutorial.html" aria-label="手机版教程">教程</a>
     <a class="gh" href="https://github.com/rddmwmddr/android-ad-cleaner" target="_blank" rel="noopener">
       <svg viewBox="0 0 16 16" aria-hidden="true"><path d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"/></svg>
       GitHub
@@ -244,9 +266,9 @@ footer a:hover { color: var(--ink); }
 <div class="hero">
   <div class="wrap">
     <div>
-      <div class="label">开源 · MAC / WINDOWS 客户端</div>
+      <div class="label">开源 · 安卓 APP / MAC / WINDOWS</div>
       <h1>把手机里的广告<span class="sw on flip" style="--i:-3" aria-hidden="true"></span>关掉</h1>
-      <p class="lead">国产安卓手机的开屏广告、热搜、资讯推荐、营销推送。插上数据线，在电脑上点几下。</p>
+      <p class="lead">国产安卓手机的开屏广告、热搜、资讯推荐、营销推送。手机 App 里点一下，或用数据线连电脑。</p>
       <div class="cta">
         <a class="btn primary" id="hero-cn" href="#download">国内下载 <small id="hero-os"></small></a>
         <a class="btn" id="hero-gh" href="#download">GitHub 下载</a>
@@ -277,7 +299,7 @@ footer a:hover { color: var(--ink); }
   <div class="wrap">
     <div class="head">
       <h2>下载</h2>
-      <p class="lead" id="dl-lead">选你的电脑。国内下载走百度网盘，链接里带提取码。替换旧版程序，原来的备份保留。</p>
+      <p class="lead" id="dl-lead">选你的设备。国内下载走 Gitee，不用登录。安装版会原地替换旧版，原来的备份保留；免安装版不会。</p>
     </div>
     <div class="dl" id="dl"></div>
     <div class="after" id="dl-after"></div>
@@ -329,15 +351,30 @@ footer a:hover { color: var(--ink); }
   <div class="wrap">
     <div class="head">
       <h2>怎么用</h2>
-      <p class="lead">有机型脚本的手机，从插线到完成 4 到 6 分钟。</p>
+      <p class="lead">手机版打开点一下就行；电脑版用数据线，有机型脚本的手机从插线到完成 4 到 6 分钟。</p>
     </div>
-    <ol class="steps">
-      <li><b>连接手机</b><p>打开开发者模式和 USB 调试，用数据线连电脑。客户端里有五个品牌的图文教程。</p></li>
-      <li><b>检测</b><p>读取型号、系统版本、机型脚本、快应用和广告组件的状态。只读。</p></li>
-      <li><b>选择</b><p>营销通知按渠道列出，服务类渠道默认不勾。快应用和广告组件由你决定。</p></li>
-      <li><b>执行</b><p>开始前存一份改动前的快照。执行中显示进度和日志，手机放在一边。</p></li>
-      <li><b>完成</b><p>列出每一步的结果。关闭开发者模式，改动保留。「还原改动」可以恢复。</p></li>
-    </ol>
+    <div class="paths">
+      <div class="path" data-path="phone">
+        <h3>手机版<span>不用电脑，第一次做 3 个设置约 1 分钟</span></h3>
+        <ol class="steps">
+          <li><b>做 3 个设置</b><p>打开开发者选项、无线调试，授权本 App。<a href="android-tutorial.html">图文和视频教程</a>里有每个品牌的连点位置。</p></li>
+          <li><b>点「一键去广告」</b><p>先检测手机型号和系统、扫描营销通知，扫完停在确认页。</p></li>
+          <li><b>确认要关的项</b><p>默认勾选和电脑版一致，想改就先改，点「开始」才动手。</p></li>
+          <li><b>后台执行</b><p>在一块看不见的后台屏上逐项关闭，这时可以照常用手机。不支持后台屏的机型会借用当前屏幕，那时页面会写「请不要碰手机」。</p></li>
+          <li><b>完成</b><p>每一项都成功就完成了。想恢复点「⋯」→「还原改动」，完成页也能帮你关掉开发者模式。</p></li>
+        </ol>
+      </div>
+      <div class="path" data-path="desk">
+        <h3>电脑版<span>数据线连电脑</span></h3>
+        <ol class="steps">
+          <li><b>连接手机</b><p>打开开发者模式和 USB 调试，用数据线连电脑。客户端里有五个品牌的图文教程。</p></li>
+          <li><b>检测</b><p>读取型号、系统版本、机型脚本、快应用和广告组件的状态。只读。</p></li>
+          <li><b>选择</b><p>营销通知按渠道列出，服务类渠道默认不勾。快应用和广告组件由你决定。</p></li>
+          <li><b>执行</b><p>开始前存一份改动前的快照。执行中显示进度和日志，手机放在一边。</p></li>
+          <li><b>完成</b><p>列出每一步的结果。关闭开发者模式，改动保留。「还原改动」可以恢复。</p></li>
+        </ol>
+      </div>
+    </div>
   </div>
 </section>
 
@@ -351,7 +388,7 @@ footer a:hover { color: var(--ink); }
       <div><b>无需 root、解锁、刷机</b><p>系统更新、保修保持原样。</p></div>
       <div><b>系统应用：挂起，不卸载</b><p>一条命令恢复。</p></div>
       <div><b>协议与权限弹窗</b><p>点「取消」「以后再说」「不允许」。</p></div>
-      <div><b>数据去向</b><p>执行过程在电脑和手机之间进行。错误日志上报，发送前由你确认。</p></div>
+      <div><b>数据去向</b><p>电脑版在你的电脑和手机之间进行；手机版全程只在这台手机上。错误日志上报，发送前由你确认。</p></div>
     </div>
   </div>
 </section>
@@ -360,7 +397,7 @@ footer a:hover { color: var(--ink); }
   <div class="wrap">
     <div class="head">
       <h2>机型</h2>
-      <p class="lead">通过 adb 连接的安卓手机可以处理营销通知、快应用和广告组件。App 里的开关需要机型脚本。</p>
+      <p class="lead">手机版和电脑版都能处理营销通知、快应用和广告组件。App 里的开关需要机型脚本。</p>
     </div>
     <div class="table">
       <table>
@@ -377,7 +414,7 @@ footer a:hover { color: var(--ink); }
         </tbody>
       </table>
     </div>
-    <p class="fine">表里没有你的手机：客户端左下角「反馈问题」→「适配新机型」。小米、Redmi 需要打开开发者选项里的「USB 调试（安全设置）」。</p>
+    <p class="fine">表里没有你的手机：电脑版在左下角「反馈问题」→「适配新机型」，手机版是右上角「⋯」→「反馈问题」→「适配新机型」。小米、Redmi 需要打开开发者选项里的「USB 调试（安全设置）」，两个版本都要。</p>
   </div>
 </section>
 
@@ -385,14 +422,15 @@ footer a:hover { color: var(--ink); }
   <div class="wrap">
     <div class="head"><h2>常见问题</h2></div>
     <div class="faq">
-      <details><summary>Mac 怎么看是哪种芯片？</summary><p>屏幕左上角苹果图标 → 关于本机。「芯片」一栏写 Apple M 开头的是 Apple 芯片，写 Intel 的是 Intel 芯片。</p></details>
-      <details><summary>Windows 弹出「Windows 已保护你的电脑」</summary><p>安装程序没有代码签名。点「更多信息」→「仍要运行」。</p></details>
-      <details><summary>Windows 提示缺少 WebView2，或提示「程序文件被 Windows 标记成来自网络」</summary><p>到微软官网下载安装「WebView2 Evergreen Bootstrapper」，然后打开本程序。安装后提示没有消失，把弹窗括号里的原文发到反馈里。</p><p>用的是便携版（zip 解压出来的）时，提示可能不是真的缺 WebView2，而是解压出来的文件被 Windows 标成「来自网络」、加载时被拦住了：对下载的 zip 点右键 →「属性」→ 勾选「解除锁定」→ 确定，重新解压后再打开；zip 已经删了，就在解压出来的文件夹里按住 Shift 点右键 →「在此处打开 PowerShell 窗口」，粘贴 <code>Get-ChildItem . -Recurse -File | Unblock-File</code> 回车。安装版不受影响。</p></details>
-      <details><summary>插上手机，客户端认不出来</summary><p>换一根能传数据的线；手机通知栏里 USB 用途选「传输文件」；手机弹窗点「允许 USB 调试」。荣耀、华为打开「仅充电模式下允许 ADB 调试」；三星装三星 USB 驱动。退出电脑上的手机助手和安卓模拟器。</p></details>
+      <details><summary>（电脑版）Mac 怎么看是哪种芯片？</summary><p>屏幕左上角苹果图标 → 关于本机。「芯片」一栏写 Apple M 开头的是 Apple 芯片，写 Intel 的是 Intel 芯片。</p></details>
+      <details><summary>（电脑版）Windows 弹出「Windows 已保护你的电脑」</summary><p>安装程序没有代码签名。点「更多信息」→「仍要运行」。</p></details>
+      <details><summary>（电脑版）Windows 提示缺少 WebView2，或提示「程序文件被 Windows 标记成来自网络」</summary><p>到微软官网下载安装「WebView2 Evergreen Bootstrapper」，然后打开本程序。安装后提示没有消失，把弹窗括号里的原文发到反馈里。</p><p>用的是便携版（zip 解压出来的）时，提示可能不是真的缺 WebView2，而是解压出来的文件被 Windows 标成「来自网络」、加载时被拦住了：对下载的 zip 点右键 →「属性」→ 勾选「解除锁定」→ 确定，重新解压后再打开；zip 已经删了，就在解压出来的文件夹里按住 Shift 点右键 →「在此处打开 PowerShell 窗口」，粘贴 <code>Get-ChildItem . -Recurse -File | Unblock-File</code> 回车。安装版不受影响。</p><p>提示「本地程序集被判成远程来源」时，确认 <code>AndroidAdCleaner.exe</code> 旁边有 <code>AndroidAdCleaner.exe.config</code>（新版包自带，别删、别改名）；没有就用最新版 zip 重新解压，有了还这样也换最新版。</p><p>这几类提示弹出时，整段文字已经复制到剪贴板，可以直接粘贴到反馈里，不用手抄；剪贴板被占着时按 <code>Ctrl+C</code> 也能复制。</p></details>
+      <details><summary>（电脑版）Windows 上装了新版，旧的「安卓去广告」还在，两个程序并存</summary><p>国内走 Gitee 拿到的是免安装版（zip），它不会替换、也不会卸载之前装过的旧版。想让新版顶掉旧版，两种做法任选：用 GitHub 上的安装版覆盖安装，它和旧版共用同一个安装标识，会原地升级并清掉旧的开始菜单项和桌面快捷方式；或先卸载旧的「安卓去广告」（0.3.2 及更早版本装的名字）——Windows 11 在「设置 → 应用 → 已安装的应用」里，Windows 10 在「设置 → 应用和功能」里——再删掉桌面和开始菜单里的旧快捷方式。卸载只删程序目录，数据与备份保留。</p></details>
+      <details><summary>（电脑版）插上手机，客户端认不出来</summary><p>换一根能传数据的线，插电脑后面的 USB 口；后面的口是 USB 2.0 的话，换一个 USB 3.0 口再试；手机通知栏里 USB 用途选「传输文件」；手机弹窗点「允许 USB 调试」。荣耀、华为打开「仅充电模式下允许 ADB 调试」；三星装三星 USB 驱动。退出电脑上的手机助手和安卓模拟器。</p></details>
       <details><summary>小米 / Redmi 点不动，跑一半锁屏</summary><p>开发者选项里打开「USB 调试（安全设置）」，需要插 SIM 卡、登录小米账号。</p></details>
       <details><summary>会影响系统更新和保修吗？</summary><p>不会。不 root，不解锁，不改系统分区。用到的是开发者选项和系统自带的设置项。</p></details>
-      <details><summary>关完还会有广告吗？</summary><p>会剩一些：浏览器搜索框的轮播热词没有开关；新装的 App 带着广告跟踪和营销通知，装新 App 后跑一次客户端。第三方 App 自己的开屏广告不在范围内。</p></details>
-      <details><summary>怎么恢复？</summary><p>客户端左下角「还原改动」：恢复快应用、恢复挂起的广告组件、重新打开关掉的营销通知。App 里的开关按清单路径打开。</p></details>
+      <details><summary>关完还会有广告吗？</summary><p>会剩一些：浏览器搜索框的轮播热词没有开关；新装的 App 带着广告跟踪和营销通知，装新 App 后再跑一次（电脑版客户端，或手机 App 的「一键去广告」）。第三方 App 自己的开屏广告不在范围内。</p></details>
+      <details><summary>怎么恢复？</summary><p>电脑版在左下角「还原改动」，手机版是右上角「⋯」→「还原改动」：恢复快应用、恢复挂起的广告组件、重新打开关掉的营销通知。App 里的开关按清单路径打开。</p></details>
     </div>
   </div>
 </section>
@@ -400,10 +438,11 @@ footer a:hover { color: var(--ink); }
 
 <footer>
   <div class="wrap">
-    <span>安卓去广告 · MIT 开源</span>
+    <span>肉呆去广告 · MIT 开源</span>
     <nav aria-label="页脚链接">
       <a href="https://github.com/rddmwmddr/android-ad-cleaner" target="_blank" rel="noopener">源代码</a>
       <a href="https://github.com/rddmwmddr/android-ad-cleaner/releases" target="_blank" rel="noopener">更新说明</a>
+      <a href="android-tutorial.html">手机版教程</a>
       <a href="https://github.com/rddmwmddr/android-ad-cleaner/tree/main/docs/%E6%B8%85%E5%8D%95" target="_blank" rel="noopener">手动清单</a>
       <a href="https://github.com/rddmwmddr/android-ad-cleaner/blob/main/docs/12-%E9%94%99%E8%AF%AF%E6%97%A5%E5%BF%97%E4%B8%8A%E6%8A%A5.md" target="_blank" rel="noopener">错误日志上报说明</a>
       <a href="https://github.com/rddmwmddr/android-ad-cleaner/issues" target="_blank" rel="noopener">反馈问题</a>
@@ -413,25 +452,29 @@ footer a:hover { color: var(--ink); }
 </footer>
 
 <script>
-/* ===== 发布信息：发新版或填网盘链接时只改这里（gui/upload_baidu.sh 按这个格式自动写入网盘链接） ===== */
+/* ===== 发布信息：发新版时只改这里。国内下载走 gitee（gui/upload_gitee.py 上传）。
+   Gitee 不可用时的退路：gitee 留空，跑 gui/upload_baidu.sh，它会把网盘链接写回下面的 baidu，按钮随之恢复。 ===== */
 const REL = {
-  version: "0.3.1",
-  github: "https://github.com/rddmwmddr/android-ad-cleaner/releases/download/v0.3.1/",
-  // 百度网盘：每个版本可以单独填链接（files 里的 baidu）；没填的用这里的总链接（整个大文件夹的分享）
-  baidu: { url: "https://pan.baidu.com/s/18slO2hS6PsZcVmWgdQZdUA", code: "wj4m" },
+  version: "0.4.0",
+  github: "https://github.com/rddmwmddr/android-ad-cleaner/releases/download/v0.4.0/",
+  gitee: "https://gitee.com/rddmw/android-ad-cleaner/releases/download/v0.4.0/",
+  baidu: { url: "", code: "" },
   files: [
-    { id: "mac-arm64", folder: "Mac-Apple芯片", baidu: { url: "https://pan.baidu.com/s/1NW6st5DZTxyubBAIVbU69g", code: "bft0" }, title: "Mac · Apple 芯片", sub: "M1 / M2 / M3 / M4 及以后", file: "AndroidAdCleaner-0.3.1-mac-arm64.dmg", size: "35.3 MB",
-      note: "苹果公证通过，双击打开", sha: "62b1410431b81965599468d1bd80905863a4c56a45f1fcee07b8bd308c998662" },
-    { id: "mac-intel", folder: "Mac-Intel芯片", baidu: { url: "https://pan.baidu.com/s/1tFrq_NhbzbjznxBmgFliQw", code: "8oos" }, title: "Mac · Intel 芯片", sub: "2020 年及以前的 Intel Mac，macOS 11 及以上", file: "AndroidAdCleaner-0.3.1-mac-intel.dmg", size: "40.5 MB",
-      note: "苹果公证通过，双击打开", sha: "973e9c9f85588448e763567c8e4cb35d157e43e5734ad1525d9218997a42bdf0" },
-    { id: "win-setup", folder: "Windows-安装版", baidu: { url: "https://pan.baidu.com/s/1l5vtm0m0bzrktIRFdo4iRQ", code: "clqm" }, title: "Windows · 安装版", sub: "Windows 10 / 11（64 位）", file: "AndroidAdCleaner-0.3.1-windows-setup.exe", size: "30.3 MB",
-      note: "弹出安全提示时点「更多信息」→「仍要运行」", sha: "383ec5e3d410f805173212f7a6328ca2a0bfc632f48d612b3a397ff74d2fd968" },
-    { id: "win-zip", folder: "Windows-免安装版", baidu: { url: "https://pan.baidu.com/s/1j0LcMPBU1SFmPjOElaTo5w", code: "uemm" }, title: "Windows · 免安装", sub: "Windows 10 / 11（64 位）", file: "AndroidAdCleaner-0.3.1-windows-portable.zip", size: "45.2 MB",
-      note: "解压后双击 AndroidAdCleaner.exe", sha: "9dae62bafefdb64d032c4ecb5675306bb83aab5fa8f105579974cbcfbc4970f9" },
+    { id: "mac-arm64", folder: "Mac-Apple芯片", baidu: { url: "", code: "" }, title: "Mac · Apple 芯片", sub: "M1 / M2 / M3 / M4 及以后", file: "AndroidAdCleaner-0.4.0-mac-arm64.dmg", size: "37.0 MB",
+      note: "苹果公证通过，双击打开", sha: "dfd8120e60e16476e03f0f1fc0268ef6ccd583da80c16a59cd3d4a709246c149" },
+    { id: "mac-intel", folder: "Mac-Intel芯片", baidu: { url: "", code: "" }, title: "Mac · Intel 芯片", sub: "2020 年及以前的 Intel Mac，macOS 11 及以上", file: "AndroidAdCleaner-0.4.0-mac-intel.dmg", size: "43.0 MB",
+      note: "苹果公证通过，双击打开", sha: "6f797904f80399c4ccaf39a2c608adac893f40afba6f0a5e5627d5373bc79787" },
+    { id: "win-setup", folder: "Windows-安装版", baidu: { url: "", code: "" }, title: "Windows · 安装版", sub: "Windows 10 / 11（64 位）", file: "AndroidAdCleaner-0.4.0-windows-setup.exe", size: "30.7 MB",
+      note: "弹出安全提示时点「更多信息」→「仍要运行」", sha: "5e345d159df1b1afb3f63bec58c37424a5c226a4f477576fd1736b0b40c8962e", gitee: false },
+    { id: "win-zip", folder: "Windows-免安装版", baidu: { url: "", code: "" }, title: "Windows · 免安装", sub: "Windows 10 / 11（64 位）", file: "AndroidAdCleaner-0.4.0-windows-portable.zip", size: "45.5 MB",
+      note: "解压后双击 AndroidAdCleaner.exe。不会替换、也不会卸载已安装的旧版；要顶掉旧版请用安装版覆盖安装，或先在 Windows「设置」的应用列表里卸载旧的「安卓去广告」（0.3.2 及更早版本装的名字）。卸载只删程序目录，数据与备份保留", sha: "cdcfa806a8963a701f959918915cb512d6385abfc8376bcabf36719bf073fecf" },
+    { id: "android", folder: "安卓手机", baidu: { url: "", code: "" }, title: "安卓手机 · 手机版", sub: "安卓 11 及以上", file: "AndroidAdCleaner-0.4.0-android-arm64.apk", size: "52.7 MB",
+      note: "不用连电脑，在手机上点一下", sha: "07f04bdbfb5d5a516e0f605bcf0cea362a6e600b8515bea6689c3cae92102dc9" },
   ],
 };
-const RELEASED = "2026-11-03";
+const RELEASED = "2026-11-07";
 const REPO = "https://github.com/rddmwmddr/android-ad-cleaner";
+const GITEE = "https://gitee.com/rddmw/android-ad-cleaner";
 
 const PROMPTS = {
   agent: {
@@ -466,9 +509,18 @@ const $ = (s) => document.querySelector(s);
 const esc = (s) => String(s).replace(/[&<>"]/g, (c) => ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;" }[c]));
 const pan = (f) => (f.baidu && f.baidu.url) ? f.baidu : (REL.baidu.url ? REL.baidu : null);
 const panUrl = (b) => b.url + (b.code ? (b.url.includes("?") ? "&" : "?") + "pwd=" + encodeURIComponent(b.code) : "");
+// gitee: false：Gitee 拒收的文件（目前是没有代码签名的 Windows 安装版），不给国内下载按钮
+const cnUrl = (f) => {
+  if (REL.gitee && f.gitee !== false) return REL.gitee + f.file;
+  const b = pan(f);
+  return b ? panUrl(b) : "";
+};
 
 function platformOf(){
-  const p = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || navigator.userAgent || "").toLowerCase();
+  const ua = navigator.userAgent || "";
+  // 安卓的 navigator.platform 报的是 "Linux armv8l"，Firefox 与内置 WebView 也没有 userAgentData，只能看 UA
+  if (/android/i.test(ua)) return "android";
+  const p = ((navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || ua).toLowerCase();
   if (p.includes("mac")) return "mac";
   if (p.includes("win")) return "win";
   return "";
@@ -491,35 +543,47 @@ async function copy(text, button, doneText){
 /* 下载 */
 (function renderDownloads(){
   const os = platformOf();
-  const mine = (f) => (os === "mac" && f.id.startsWith("mac")) || (os === "win" && f.id === "win-setup");
+  const win = REL.files.find((f) => f.id === "win-setup");
+  const winPick = win && cnUrl(win) ? win : REL.files.find((f) => f.id === "win-zip");  // 国内能下的那个
+  const mine = (f) => os === "android" ? f.id === "android"
+    : (os === "mac" && f.id.startsWith("mac")) || (os === "win" && winPick && f.id === winPick.id);
+  const osLabel = (f) => f.id === "android" ? "安卓手机" : f.id.startsWith("mac") ? "MAC"
+    : f.id.startsWith("win") ? "WINDOWS" : f.id.toUpperCase();
   $("#dl").innerHTML = REL.files.map((f) => {
-    const b = pan(f);
+    const b = pan(f), cn = cnUrl(f);
     return `<article class="card ${mine(f) ? "mine" : ""}">
-      <span class="os">${f.id.startsWith("mac") ? "MAC" : "WINDOWS"}</span>
+      <span class="os">${osLabel(f)}</span>
       <h3>${esc(f.title.split(" · ")[1] || f.title)}</h3>
       <span class="sub">${esc(f.sub)}</span>
-      <span class="note">${esc(f.note)}</span>
+      <span class="note">${esc(f.note)}${f.gitee === false && !cn ? "。国内下不到安装版，要它请点下面的 GitHub 下载" : ""}</span>
       <span class="size">${esc(f.size)}</span>
       <div class="btns">
-        ${b ? `<a class="btn primary" href="${esc(panUrl(b))}" target="_blank" rel="noopener">国内下载</a>
+        ${cn ? `<a class="btn primary" href="${esc(cn)}" target="_blank" rel="noopener">国内下载</a>` : ""}
+        ${b ? `${REL.gitee ? `<a class="btn" href="${esc(panUrl(b))}" target="_blank" rel="noopener">百度网盘</a>` : ""}
                ${b.code ? `<span class="pwd">提取码 <code>${esc(b.code)}</code><button class="mini" data-copy="${esc(b.code)}">复制</button></span>` : ""}` : ""}
-        <a class="btn" href="${esc(REL.github + f.file)}">GitHub 下载</a>
+        <a class="btn ${cn ? "" : "primary"}" href="${esc(REL.github + f.file)}">GitHub 下载</a>
       </div>
     </article>`;
   }).join("");
   const all = REL.baidu.url ? `<span>百度网盘全部版本：<a href="${esc(panUrl(REL.baidu))}" target="_blank" rel="noopener">打开</a>${REL.baidu.code ? `　提取码 <code>${esc(REL.baidu.code)}</code>` : ""}</span>` : "";
-  $("#dl-after").innerHTML = `${all}<span><a href="${REPO}/releases" target="_blank" rel="noopener">GitHub 全部版本</a></span><span><a href="${REPO}/releases/tag/v${esc(REL.version)}" target="_blank" rel="noopener">v${esc(REL.version)} 更新说明</a></span>`;
+  const giteeAll = REL.gitee ? `<span><a href="${GITEE}/releases" target="_blank" rel="noopener">Gitee 全部版本</a></span>` : "";
+  $("#dl-after").innerHTML = `${all}${giteeAll}<span><a href="${REPO}/releases" target="_blank" rel="noopener">GitHub 全部版本</a></span><span><a href="${REPO}/releases/tag/v${esc(REL.version)}" target="_blank" rel="noopener">v${esc(REL.version)} 更新说明</a></span>`;
   $("#sums").innerHTML = REL.files.map((f) => `${esc(f.sha)}  ${esc(f.file)}`).join("<br>");
-  $("#hero-meta").textContent = `v${REL.version} · ${RELEASED} · Mac（Apple / Intel 芯片）· Windows 10 / 11`;
+  const phone = REL.files.find((f) => f.id === "android");
+  $("#hero-meta").textContent = `v${REL.version} · ${RELEASED} · Mac（Apple / Intel 芯片）· Windows 10 / 11${phone ? ` · ${phone.sub}` : ""}`;
 
-  const win = REL.files.find((f) => f.id === "win-setup");
   if (os === "win" && win){
-    const b = pan(win);
     $("#hero-os").textContent = "Windows";
-    if (b){ $("#hero-cn").href = panUrl(b); $("#hero-cn").target = "_blank"; $("#hero-cn").rel = "noopener"; }
+    if (winPick && cnUrl(winPick)){ $("#hero-cn").href = cnUrl(winPick); $("#hero-cn").target = "_blank"; $("#hero-cn").rel = "noopener"; }
     $("#hero-gh").href = REL.github + win.file;
   } else if (os === "mac"){
     $("#hero-os").textContent = "Mac";
+  } else if (os === "android" && phone){
+    // 下载页还没上 APK 时不写「安卓」，否则按钮指着一个不存在的安装包
+    $("#hero-os").textContent = "安卓";
+    const cn = cnUrl(phone);
+    if (cn){ $("#hero-cn").href = cn; $("#hero-cn").target = "_blank"; $("#hero-cn").rel = "noopener"; }
+    $("#hero-gh").href = REL.github + phone.file;
   }
   document.addEventListener("click", (e) => {
     const t = e.target.closest("[data-copy]");

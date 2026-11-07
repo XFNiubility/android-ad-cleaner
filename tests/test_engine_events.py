@@ -5,6 +5,7 @@ import os
 import sys
 import tempfile
 import threading
+import time
 import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
@@ -15,6 +16,7 @@ import adb_link
 import events
 import fast
 import run
+import wait
 from fixtures import phone_stub
 
 PAUSED = "⏸ 已暂停：现在可以操作手机。操作完回到桌面、保持解锁，再点「继续」"
@@ -72,7 +74,11 @@ class PausePointTests(unittest.TestCase):
                 with patch.dict(fast.os.environ, {"AAC_PAUSE_FILE": str(path)}):
                     path.write_text("")
                     threading.Timer(0.05, path.unlink).start()
-                    return fast.pause_point()
+                    # 实现的轮询间隔是 0.5 秒：换成 0.01 秒，文件一删就退出，不真等满一轮。
+                    # 真 sleep 先取出来 —— fast.time 就是 time 模块本身，直接调会递归回替身。
+                    real_sleep = time.sleep
+                    with patch.object(fast.time, "sleep", lambda seconds: real_sleep(0.01)):
+                        return fast.pause_point()
         return capture(call, on=on)
 
     def test_reports_paused_then_resumed_around_the_wait(self):
@@ -104,15 +110,32 @@ class LockedTests(unittest.TestCase):
         self.assertEqual(self.phone_wait(True)[0], self.phone_wait(False)[0])
 
     def test_run_py_reports_locked_from_its_own_copy(self):
-        def wait(on):
+        def report(on):
             with patch.object(run, "sh"), patch.object(run, "locked", side_effect=[True, False]), \
                  patch.object(run.time, "sleep"):
                 return capture(lambda: run.wait_unlocked("test"), on=on)
-        on, off = wait(True), wait(False)
+        on, off = report(True), report(False)
         self.assertTrue(on[2])
         self.assertEqual(on[1], ["locked"])
         self.assertEqual(on[0], LOCKED)
         self.assertEqual(on[0], off[0])
+
+    def test_both_call_sites_go_through_the_shared_wait(self):
+        # 文案与节奏只有一份（#709）：两处都调 wait.wait_unlocked，只交出锁屏判据与亮屏命令
+        p = phone_stub("test", d=Mock())
+        p.locked = Mock(return_value=False)
+        with patch.object(wait, "wait_unlocked", return_value=True) as shared, \
+             patch.object(run, "sh") as sh, patch.object(run, "locked", return_value=False) as run_locked:
+            self.assertTrue(run.wait_unlocked("test"))
+            self.assertTrue(p.wait_unlocked())
+            (run_locked_arg, run_wake), (phone_locked, phone_wake) = [c.args[:2] for c in shared.call_args_list]
+            run_locked_arg()
+            run_wake()
+            phone_wake()
+        run_locked.assert_called_once_with("test")
+        sh.assert_called_once_with("test", adb_link.WAKEUP)
+        self.assertIs(phone_locked, p.locked)
+        p.d.shell.assert_called_once_with(adb_link.WAKEUP)
 
 
 class UiBusyTests(unittest.TestCase):

@@ -100,11 +100,17 @@ class HandlerInterfaceTests(unittest.TestCase):
                 self.assertEqual(run.main(["-s", "S", command, *rest]), 3)
                 self.assertEqual(child.call_args.args, expected)
 
+    def test_adapt_forwards_child_code(self):
+        """adapt 不在 COMMANDS 表里（它在 -s 解析之前转发），子进程码照样原样透出。
+        旧树也绿，守的是不回退：`adapt.py` 改成返回退出码之后，这条转发仍是它唯一的出口（#708）。"""
+        with patch.object(run, "py", return_value=3) as child:
+            self.assertEqual(run.main(["adapt", "gen", "探路.tsv"]), 3)
+        child.assert_called_once_with("adapt.py", "gen", "探路.tsv")
+
     def test_chan_scan_forwards_child_code_and_its_stderr(self):
         err = io.StringIO()
         failed = SimpleNamespace(returncode=7, stdout="", stderr="读取失败\n")
-        with patch.object(run, "latest_backup", return_value="/tmp/x"), \
-             patch.object(run.subprocess, "run", return_value=failed), \
+        with patch.object(run.subprocess, "run", return_value=failed), \
              contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(err):
             self.assertEqual(run.main(["-s", "S", "chan-scan"]), 7)
         self.assertIn("读取失败", err.getvalue())
@@ -115,16 +121,35 @@ class HandlerInterfaceTests(unittest.TestCase):
                              stderr="另有 3 个前台服务渠道未列入清单\n")
         out, err = io.StringIO(), io.StringIO()
         with tempfile.TemporaryDirectory() as directory, \
-             patch.object(run, "latest_backup", return_value=directory) as backup, \
+             patch.object(run, "BACKUPS", directory), \
+             patch.object(run, "info", return_value={"model": "M"}), \
              patch.object(run.subprocess, "run", autospec=True, return_value=ok) as child, \
              contextlib.redirect_stdout(out), contextlib.redirect_stderr(err):
             self.assertEqual(run.main(["-s", "S", "chan-scan"]), 0)
-            saved = Path(directory, "channels.tsv").read_text(encoding="utf-8")
-        backup.assert_called_once_with("S")
+            (made,) = list(Path(directory).iterdir())
+            saved = (made / "channels.tsv").read_text(encoding="utf-8")
+        self.assertRegex(made.name, r"^M-\d{8}-\d{4}$")
         child.assert_called_once()
         self.assertIn("另有 3 个前台服务渠道未列入清单", err.getvalue())
         self.assertNotIn("另有", out.getvalue())
         self.assertNotIn("另有", saved)
+
+    def test_chan_scan_leaves_the_shared_gui_dir_alone(self):
+        """候选清单也写快照目录：`<型号>-gui` 里那份历史清单会被还原合并，扫描不能盖掉它（#651）。"""
+        ok = SimpleNamespace(returncode=0, stdout="com.shop\tpromo\t活动优惠\n", stderr="")
+        legacy = "com.old\tpromo\t旧渠道\tO\n"
+        with tempfile.TemporaryDirectory() as directory:
+            gui = Path(directory, "M-gui")
+            gui.mkdir()
+            (gui / "channels.tsv").write_text(legacy, encoding="utf-8")
+            with patch.object(run, "BACKUPS", directory), \
+                 patch.object(run, "info", return_value={"model": "M"}), \
+                 patch.object(run.subprocess, "run", autospec=True, return_value=ok), \
+                 contextlib.redirect_stdout(io.StringIO()), contextlib.redirect_stderr(io.StringIO()):
+                self.assertEqual(run.main(["-s", "S", "chan-scan"]), 0)
+            self.assertEqual((gui / "channels.tsv").read_text(encoding="utf-8"), legacy)
+            (made,) = [p for p in Path(directory).iterdir() if p.name != "M-gui"]
+            self.assertIn("com.shop", (made / "channels.tsv").read_text(encoding="utf-8"))
 
     def test_chan_off_without_a_list_fails_before_starting_anything(self):
         err = io.StringIO()
@@ -199,7 +224,7 @@ class HandlerInterfaceTests(unittest.TestCase):
              contextlib.redirect_stdout(out := io.StringIO()):
             self.assertEqual(run.main(["-h"]), 0)
             self.assertEqual(run.main([]), 0)
-        self.assertIn("手机去广告", out.getvalue())
+        self.assertIn("肉呆去广告", out.getvalue())
 
     def test_bad_arguments_still_report_missing_adb_first(self):
         """参数写错时也先报「找不到 adb」：这与旧实现 import 期的先后一致，别在搬 adb() 时弄反。"""
@@ -308,6 +333,75 @@ class RoundTripTests(unittest.TestCase):
         text = out.getvalue()
         self.assertIn("com.example.a/.One", text)
         self.assertIn("com.example.b/.Two", text)
+
+    def test_check_keeps_reserved_wording_for_keep_packages(self):
+        """who 里只有保留平台时，文案与现在逐字一致（#564）。"""
+        def shell(_s, cmd):
+            if cmd.startswith("pm query-activities"):
+                return "  com.nearme.instant.platform/.Main\n"
+            if cmd.startswith("pm list packages") and "-d" not in cmd:
+                return "".join(f"package:{p}\n" for p in self.PKGS)
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(run, "sh", side_effect=shell), \
+             patch.object(run, "quickapp_switch", return_value=None), \
+             patch.object(run, "suspended", return_value=True), \
+             patch.object(run, "latest_backup", return_value=directory), \
+             patch.object(sys, "argv", ["run.py", "-s", "test", "quickapp", "check"]), \
+             contextlib.redirect_stdout(out := io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            run.main()
+        text = out.getvalue()
+        self.assertIn("hap:// 链接仍由 com.nearme.instant.platform/.Main 接管（保留项）：广告仍可能跳进快应用。", text)
+        self.assertNotIn("应答方仍列出", text)
+
+    def test_check_names_suspended_handlers_separately_from_reserved_ones(self):
+        """非保留包已挂起但系统仍声明它接 hap://：不能说成「保留项」（#564，小米 17 实测）。"""
+        def shell(_s, cmd):
+            if cmd.startswith("pm query-activities"):
+                return "  com.miui.hybrid/.VendorDispatcherActivity\n"
+            if cmd.startswith("pm list packages") and "-d" not in cmd:
+                return "".join(f"package:{p}\n" for p in self.PKGS)
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(run, "sh", side_effect=shell), \
+             patch.object(run, "quickapp_switch", return_value=None), \
+             patch.object(run, "suspended", return_value=True), \
+             patch.object(run, "latest_backup", return_value=directory), \
+             patch.object(sys, "argv", ["run.py", "-s", "test", "quickapp", "check"]), \
+             contextlib.redirect_stdout(out := io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            run.main()
+        text = out.getvalue()
+        self.assertIn("com.miui.hybrid/.VendorDispatcherActivity", text)
+        self.assertIn("已挂起，但系统仍声明它能接这类链接", text)
+        self.assertNotIn("（保留项）", text)
+        self.assertNotIn("VendorDispatcherActivity 接管", text)
+
+    def test_check_separates_reserved_from_suspended_handlers_in_one_run(self):
+        """保留项与已挂起组件同时应答时，两种状态各说各的（ColorOS 上 platform 保留、其余已挂起）。"""
+        def shell(_s, cmd):
+            if cmd.startswith("pm query-activities"):
+                return "  com.nearme.instant.platform/.Main\n  com.oppo.instant.local.service/.X\n"
+            if cmd.startswith("pm list packages") and "-d" not in cmd:
+                return "".join(f"package:{p}\n" for p in self.PKGS)
+            return ""
+
+        with tempfile.TemporaryDirectory() as directory, \
+             patch.object(run, "sh", side_effect=shell), \
+             patch.object(run, "quickapp_switch", return_value=None), \
+             patch.object(run, "suspended", return_value=True), \
+             patch.object(run, "latest_backup", return_value=directory), \
+             patch.object(sys, "argv", ["run.py", "-s", "test", "quickapp", "check"]), \
+             contextlib.redirect_stdout(out := io.StringIO()), \
+             contextlib.redirect_stderr(io.StringIO()):
+            run.main()
+        text = out.getvalue()
+        self.assertIn("hap:// 链接仍由 com.nearme.instant.platform/.Main 接管（保留项）", text)
+        self.assertIn("hap:// 链接的应答方仍列出 com.oppo.instant.local.service/.X", text)
+        self.assertEqual(text.count("（保留项）"), 1)
 
     def test_fold_open_reads_wm_size_once(self):
         """wm size 读一次就够，别一行里发两趟。"""

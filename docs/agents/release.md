@@ -79,18 +79,24 @@ gh search prs --repo "$REPO" --closed ">=$LAST" is:unmerged --json author,author
 
 GitHub 搜索索引有延迟，刚合上没几小时的 PR 可能还查不到；对着本版 PR 列表手工补一遍。
 
+## 手机版 APK
+
+手机版随桌面版一起发布，产物是 arm64 APK（`android/build.sh assembleRelease`）。签名与分发由 owner 掌握：构建读 `.private/android-signing/keystore.properties`（见 `android/app/build.gradle.kts`），缺失就退回 debug 签名。这一节只记口径，不写实际操作步骤；本机没有这份证书，签名与分发路径未验证。
+
+`android/**` 的改动由 `.github/workflows/android.yml` 在 PR 上跑 `assembleDebug` 编译闸门，不产出发版产物。APK 由 owner 构建并传到同一个 Release，构建不在「一轮发版的产物顺序」里；但第 8 步的上传脚本按 Release 里的文件现算清单，APK 在 Release 里就一并传到 Gitee，所以那一版多传一个包。当次 Release 里已有 APK 时，README 下载区与 `docs/手机版教程/README.md` 的「下载」一节一并更新链接；没有就维持「随下一版发布」。
+
 ## 一轮发版的产物顺序
 
-1. **跑验证**：`python -m unittest discover -s tests`（本机 `.venv`）与 `uv run --python 3.12 --with-requirements requirements.txt python -m unittest discover -s tests` 各一套，加 `uvx ruff@0.17.3 check --select F,E9 tool tests gui`。这一步的数字就是正文验证行与 CHANGELOG 那一行的来源，只跑一次。
+1. **跑验证**：`python -m unittest discover -s tests`（本机 `.venv`，3.13，与 Linux job 同一版）一套，加 `uvx ruff@0.17.3 check --select F,E9 tool tests gui android/app/src/main/python`。这一步的数字就是正文验证行与 CHANGELOG 那一行的来源，只跑一次。两个安装包都是 3.12 产物，tag 构建时 `build-windows.yml` 会在 3.12 上再跑一遍套件（Windows 平台，POSIX-only 用例会 skip）；两版结论不一致时以那次为准。
 2. **补齐 `## 未发布`**：确认这一版的每一笔都在里面、都是一行一条。这时还没写验证行。
 3. **建 Release 草稿并推 tag**：`build-windows.yml` 由 `v*` 标签触发，要求对应 Release **先存在**（草稿即可，否则 workflow 报「请先创建对应的 Release 草稿」）。它打包两个 Windows 安装包、跑冒烟测试、把产物传进草稿。草稿已公开时它保留已验证的文件、不重建。
 4. **上传 macOS 安装包**到同一个草稿（本机打包与公证步骤在 `CLAUDE.local.md`）。
-5. **写正文并发布**。正文可以在草稿阶段写好；发布前核对四个安装包的 SHA256 与 `SHA256SUMS.txt` 一致，并按「致谢谁」核对待致谢名单。
+5. **写正文并发布**。正文可以在草稿阶段写好；发布前核对这一版发出去的每个安装包（含 APK）的 SHA256 与 `SHA256SUMS.txt` 一致，并按「致谢谁」核对待致谢名单。那份校验清单是手写的，漏掉哪个包，`baidu_rows.py --legacy` 生成安装说明时会直接报错，不会写出空校验值。
 6. **同步用户侧文本**：
    - `README.md` 的版本摘要：首段从 Release 正文首段复制，后面接「旧版不会自动更新……」；下载表格换版本号与链接。
-   - `index.html` 的 `REL`（`version` / `github` / `files[].file` / `size` / `sha`）与 `RELEASED` 日期。
+   - `index.html` 的 `REL`（`version` / `github` / `gitee` / `files[].file` / `size` / `sha`）与 `RELEASED` 日期。APK 条目的 `id` 逐字写 `android`：卡片角标、手机端高亮和 `baidu_rows.py` 生成的安装说明都靠它，没有这一条，线上就看不到手机版。
 7. **同步版本提示**：官网的 `android-ad-cleaner-latest.json`，以及放在机主服务器上的官网副本（两处的步骤在本机 `CLAUDE.local.md`）。
-8. **网盘**：`gui/upload_baidu.sh <版本>`，从公开的 Release 下载安装包、核对 SHA256、上传并回写 `index.html` 的网盘链接。
+8. **国内下载**：`python3 gui/upload_gitee.py <版本>`，从公开的 Release 下载安装包、核对 SHA256，推代码和标签到 Gitee、建发行版传附件，再匿名下载回来核对。Windows 安装版被 Gitee 拒收，不上传，下载页上它标 `gitee: false`，只给 GitHub 按钮。`index.html` 的 `REL.gitee` 换成这一版的路径。百度网盘暂停使用，页面上不显示；Gitee 不可用时把 `REL.gitee` 留空，改跑 `gui/upload_baidu.sh <版本>`，它会回写网盘链接、按钮随之恢复，但 `#dl-lead` 那句文案是手写的，要把「国内下载走 Gitee，不用登录」改回「国内下载走百度网盘，链接里带提取码」，后半句「安装版会原地替换旧版，原来的备份保留；免安装版不会」原样留着。国内走 Gitee 时 Windows 访客只拿得到免安装版，它不替换、也不卸载已安装的旧版：发版正文的 Windows 侧要像 0.4.0 对 Mac 那样写明这一句，并给出两条出路（用安装版覆盖安装，或先卸载旧的「安卓去广告」，数据与备份保留）。下载页、`README`、`docs/08` 与 `gui/upload_gitee.py` 生成的 Gitee 发行版正文各自只覆盖自己那一处，不能因为页面已经写了就在发版正文里省掉。
 9. **CHANGELOG 收口**：把 `## 未发布` 改名为 `## <版本> · <日期>`，在标题下补一行验证（回归项数 + 验证了什么 + 缺什么），再重开一个空的 `## 未发布`。回归项数写第 1 步 `discover` 的输出，不记基线 SHA——那个 tag 上重跑一遍就能得到同一个数。
 10. **催复测**：按 [release-followup.md](release-followup.md) 逐条发给 `waiting-for-verify` 的报告者。
 

@@ -230,7 +230,7 @@ class RetryTests(unittest.TestCase):
         still = {**off(ON), ("com.b", "news"): ON[("com.b", "news")]}
         code, printed, toggled = run_off([OK, SKIPPED, OK, SKIPPED], [ON, still, still])
         self.assertEqual(code, 1)
-        self.assertIn("仍开着：资讯推送", printed)
+        self.assertIn("仍开着：资讯推送（com.b）", printed)
 
     def test_nothing_recognised_means_no_retry(self):
         # 华为那种一个都认不出：重试只会多等，不重试
@@ -373,7 +373,8 @@ class GuiTests(unittest.TestCase):
             api = self.api(directory, spawns=[FakeProc()])
             api._work([self.app.Task("关闭营销通知", "chan_fast.py", uses_ui=True,
                                      channels=[{"pkg": "com.taobao.taobao", "id": "promo", "name": "活动优惠", "app": "淘\t宝"}])])
-            text = Path(directory, "backups", "M-gui", "channels.tsv").read_text(encoding="utf-8")
+            (made,) = [p for p in Path(directory, "backups").iterdir() if p.name != "M-gui"]
+            text = (made / "channels.tsv").read_text(encoding="utf-8")
             self.assertIn("com.taobao.taobao\tpromo\t活动优惠\t淘 宝\n", text)
 
     def test_new_version_notice(self):

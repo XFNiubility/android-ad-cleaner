@@ -2,7 +2,6 @@
 # 路径来自 2026-10-30 真机逐页操作；验证范围及复跑记录见同目录 README.md。
 BUILD = "PD2417D_A_16.2.14.1.W10"
 MODELS = ["V2417A"]
-import shlex
 import time
 
 import adb_link
@@ -43,8 +42,8 @@ def tap(name, scrolls=4):
 
 
 def title_key(title):
-    # vivo 将说明拼在点号后；商店将“开启/关闭”拼在中文逗号后。
-    return title.split(".", 1)[0].split("，", 1)[0].strip()
+    # vivo 将说明拼在点号后；「，开启/，关闭」状态尾缀已由引擎在标题产出处剥掉（#565）。
+    return title.split(".", 1)[0].strip()
 
 
 def read_switches(max_screens=1):
@@ -132,9 +131,9 @@ def hiboard_panel():
 
 @step("系统广告")
 def _():
-    # $ 必须交给 Android shell 前引用，否则会被当作变量展开。
+    # $ 由 Phone._launch 交给 Android shell 前整串引用一次，这里照字面量写。
     # 这是设置页，不是 App 首页；说明里的“关闭后”会被通用消弹窗误认为关闭按钮。
-    p.start("com.android.settings", shlex.quote(".Settings$AdAndPrivacyActivityForOsTwo"), settle=0)
+    p.start("com.android.settings", ".Settings$AdAndPrivacyActivityForOsTwo", settle=0)
     require("AdAndPrivacyActivityForOsTwo" in p.focus(), "未进入广告与隐私页")
     close_named(["个性化广告", "个性化推荐", "智能推荐服务"], "系统·广告与隐私")
 

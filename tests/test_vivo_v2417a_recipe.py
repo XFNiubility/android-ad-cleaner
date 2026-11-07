@@ -1,26 +1,22 @@
 """V2417A：标题变化/确认关闭、服务开关保护和失败结果的离线回归。"""
-import contextlib
-import io
 from pathlib import Path
 import sys
 import unittest
-from unittest.mock import Mock, patch
+from unittest.mock import Mock
 import xml.etree.ElementTree as ET
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tool"))
+sys.path.insert(0, str(ROOT / "tests"))
 import adb_link
 import fast
 import run
-from fixtures import phone_mock
+from fixtures import load_recipe, phone_mock
 
 
 class VivoV2417ARecipeTests(unittest.TestCase):
     def load(self, phone, only=None):
-        path = ROOT / "recipes/vivo-V2417A/recipe.py"
-        scope = {"p": phone, "ONLY": only if only is not None else ["__no_steps__"]}
-        with contextlib.redirect_stdout(io.StringIO()):
-            exec(compile(path.read_text(encoding="utf-8"), str(path), "exec"), scope)
+        scope, _ = load_recipe(phone, ROOT / "recipes/vivo-V2417A/recipe.py", only)
         return scope
 
     def test_model_is_matched_without_reference_and_records_exact_build(self):
@@ -80,8 +76,7 @@ class VivoV2417ARecipeTests(unittest.TestCase):
         p.click.side_effect = toggle
         p.off.side_effect = lambda **kwargs: fast.Phone.off(p, **kwargs)
         scope = self.load(p)
-        with patch.object(fast.time, "sleep"):
-            scope["close_named"](["个性化广告"], "系统广告")
+        scope["close_named"](["个性化广告"], "系统广告")
         self.assertEqual(states, {"个性化广告": False, "个性化广告推荐": True})
         p.click.assert_called_once_with(1, 600)
         p.off.assert_called_once()
@@ -95,8 +90,9 @@ class VivoV2417ARecipeTests(unittest.TestCase):
         states = {"个性化推荐": True, "个性化广告推荐": True}
         pending = []
         names = list(states)
+        # #565 后引擎剥掉状态尾缀，脚本收到的标题不再随状态变化。
         p.switches.side_effect = lambda: [
-            (name + ("，开启" if states[name] else "，关闭"), states[name], (index + 1, 2))
+            (name, states[name], (index + 1, 2))
             for index, name in enumerate(names)
         ]
         p.click.side_effect = lambda x, y: pending.append(names[x - 1])

@@ -1,8 +1,9 @@
 #!/usr/bin/env python3
 """营销通知渠道（通用版，走 fast 引擎）。
-  chan_fast.py -s SERIAL scan             只读：列出开着的、名字像营销或属于厂商营销分类（vivo VPushChannel_0/4/6）
+  chan_fast.py -s SERIAL scan [--reset]   只读：列出开着的、名字像营销或属于厂商营销分类（vivo VPushChannel_0/4/6）
                                           的渠道（候选，人工挑）；第四列是应用名
                                           （读应用名时在 /data/local/tmp 临时放一个 3 KB 的文件，用完删掉）
+                                          --reset：清空「本机 UI 未暴露」名单后照常重扫
   chan_fast.py -s SERIAL verify 清单.tsv   只读：清单里还开着几个
   chan_fast.py -s SERIAL off 清单.tsv      逐个打开渠道页关掉
   chan_fast.py -s SERIAL on  清单.tsv      还原
@@ -19,10 +20,16 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from fast import Phone, ScreenLocked, pause_point
 from row import PATH_DEPTH, SAME_LINE, bounds, disabled_at as row_disabled_at, link, own, skeleton
 from channel_policy import classify, protected_channel
-from troubleshooting import XIAOMI_INPUT
+from troubleshooting import ON_PHONE, XIAOMI_INPUT
+from backups import root_from_env
+from ui_hidden import UiHidden
 import adb_link
 import events
 import wait
+
+# 「本机 UI 未暴露」名单落在备份目录同一个 root 下（ui_hidden.py），不另开一处。
+BACKUPS = root_from_env() or os.path.join(
+    os.path.dirname(os.path.dirname(os.path.abspath(__file__))), "backups")
 
 
 class ShellPhone(adb_link.Connection):
@@ -91,6 +98,7 @@ APP_OFF = "app_off"                    # 应用通知总开关关着
 ALREADY = "already"                    # 本来就是目标状态，不打印
 CONFIRMED_LATER = "confirmed_later"    # 第二遍重扫才确认其实已经改好
 NOT_CONFIRMED = "not_confirmed"        # 页面没认出，或重取时页面已变化
+UI_HIDDEN = "ui_hidden"                # 页面打得开、页面上确实没有这一行：系统没把它放到界面上
 MISMATCH = "mismatch"                  # 界面状态与渠道实际状态不一致
 UNCHANGED = "unchanged"                # 点了三次，渠道状态仍未改变
 ERROR = "error"                        # 意外异常，原文进 detail
@@ -120,6 +128,8 @@ RULES = {
     ALREADY: dict(fail_close=False, fail_open=False, retry=False, toggled=False, exempt=False),
     CONFIRMED_LATER: dict(fail_close=False, fail_open=False, retry=False, toggled=True, exempt=False),
     NOT_CONFIRMED: dict(fail_close=True, fail_open=True, retry=True, toggled=False, exempt=False),
+    # 本机 UI 上根本没有这个渠道的入口：关不掉，重试也是同一个页面，收尾复查也不该算「仍开着」。
+    UI_HIDDEN: dict(fail_close=False, fail_open=True, retry=False, toggled=False, exempt=True),
     MISMATCH: dict(fail_close=True, fail_open=True, retry=False, toggled=False, exempt=False),
     UNCHANGED: dict(fail_close=True, fail_open=True, retry=True, toggled=False, exempt=False),
     ERROR: dict(fail_close=True, fail_open=True, retry=False, toggled=False, exempt=False),
@@ -150,8 +160,9 @@ def kind_of_state(st):
     return {"--": NO_CHANNEL, "del": DELETED, "app": APP_OFF}[st]
 
 
-def render(outcome, label, want_on):
-    """这一项的打印行；None 表示不提（已经是目标状态，或第二遍才确认改好、第一遍的 ✗ 已说过）。"""
+def render(outcome, label, want_on, pk=""):
+    """这一项的打印行；None 表示不提（已经是目标状态，或第二遍才确认改好、第一遍的 ✗ 已说过）。
+    失败行带上包名（#582）：同名渠道分属不同 App 时，事后才说得清是哪几个。"""
     kind = outcome.kind
     if kind in (ALREADY, CONFIRMED_LATER):
         return None
@@ -163,14 +174,16 @@ def render(outcome, label, want_on):
         return f"  · 系统锁定（开关是灰的），不能关闭，不算失败  {label}"
     if kind == APP_DENIED:
         return f"  · 应用通知已整体关闭，渠道不会弹出，不算失败  {label}"
+    if kind == UI_HIDDEN:
+        return f"  · 本机界面没有这个渠道的入口，关不掉，不算失败  {label}"
     if kind == DONE:
         return f"  {'开' if want_on else '关'}  {label}"
-    return f"  ✗ {outcome.detail}  {label}"
+    return f"  ✗ {outcome.detail}  {label}" + (f"（{pk}）" if pk else "")
 
 
-def show(outcome, label, want_on):
-    """打印这一项的结局；不打印的项静默通过。机器行（骨架）跟在人话后面，由客户端分流。"""
-    line = render(outcome, label, want_on)
+def show(outcome, label, want_on, pk=""):
+    """打印这一项的结局；不打印的项静默通过。机器行（骨架、判据读数）跟在人话后面，由客户端分流。"""
+    line = render(outcome, label, want_on, pk)
     if line:
         print(line)
     if outcome.payload:
@@ -181,6 +194,19 @@ def show(outcome, label, want_on):
 # mUserVisibleTaskShown（置位条件也从 FLAG_FOREGROUND_SERVICE 扩到 isFgsOrUij()，
 # 含机主发起的任务）。两个名字都认，否则新系统上这条排除静默不生效。
 FG_SERVICE_MARKS = ("mFgServiceShown=true", "mUserVisibleTaskShown=true")
+
+
+def phone_model(reader):
+    """名单按型号分文件。读不到型号、或读数不像型号（多行、超长）时返回空串，整条名单停用：
+    宁可下一轮继续报同一行，也不把另一台手机的名单套到这台上。"""
+    try:
+        model = reader.shell("getprop ro.product.model").output
+    except Exception:
+        return ""
+    model = (model or "").strip()
+    if not model or len(model) > 40 or any(c in model for c in "\r\n\t{}<>"):
+        return ""
+    return model
 
 
 def truncated(cid):
@@ -229,16 +255,26 @@ def parse(p, locked=None, foreground=None):
     return d, app_off
 
 
+def stays_on(value):
+    """插电常亮的位：1 交流、2 USB、4 无线，三位都在就算常亮。Android 14 起「保持唤醒」写 15（多一个底座位）。"""
+    return value.isdigit() and int(value) & 7 == 7
+
+
 def keep_awake(reader):
-    """改开关期间插电常亮：营销通知一步可能跑好几分钟，以前只有机型脚本设了常亮（#71 中途锁屏）。"""
+    """改开关期间插电常亮：营销通知一步可能跑好几分钟，以前只有机型脚本设了常亮（#71 中途锁屏）。
+    手机版多半没插电，由 App 自己保持亮屏（#728）；这里设不上不影响，也不提示（#729），
+    而且干脆不写（#731）：唯一还原点是「收尾」，断线正好会跳过它，设置就留在 7。
+    vivo 经无线调试写不进任何全局设置（V2547DA / OriginOS 7 实测：put 被静默忽略），原值已是 15 时不算没设上。"""
     old = reader.shell("settings get global stay_on_while_plugged_in").output.strip()
-    try:
-        reader.shell("settings put global stay_on_while_plugged_in 7")
-        ok = reader.shell("settings get global stay_on_while_plugged_in").output.strip() == "7"
-    except RuntimeError:
-        ok = False
-    if not ok:
-        print("  ! 插电常亮没有设上，手机息屏会打断操作；请把自动锁屏时间调长后再跑。" + XIAOMI_INPUT, flush=True)
+    if not ON_PHONE:
+        try:
+            if not stays_on(old):
+                reader.shell("settings put global stay_on_while_plugged_in 7")
+            ok = stays_on(reader.shell("settings get global stay_on_while_plugged_in").output.strip())
+        except RuntimeError:
+            ok = False
+        if not ok:
+            print("  ! 插电常亮没有设上，手机息屏会打断操作；请把自动锁屏时间调长后再跑。" + XIAOMI_INPUT, flush=True)
     return old if old.isdigit() else "0"
 
 
@@ -369,12 +405,14 @@ class Reached:
 @dataclass(frozen=True)
 class Unreached:
     """没到达：卡在哪一环、这一行为什么没认出、页面结构摘要。text 就是给用户看的那一段。
-    no_row 是结构信号不是文案：这一屏除了总开关再没有别的开关，页面上确实没有这个渠道的行。"""
+    no_row 是结构信号不是文案：这一屏除了总开关再没有别的开关，页面上确实没有这个渠道的行。
+    hidden 也是结构信号（#576）：应用通知页打开了、翻到底都没读到这个渠道名 —— 系统没把它放到界面上。"""
     stage: str = ""
     why: str = ""
     hint: str = ""
     no_row: bool = False
     skeleton: str = ""       # 脱敏页面骨架（#428）：只进上报，不进人话
+    hidden: bool = False
 
     @property
     def text(self):
@@ -400,6 +438,7 @@ class ChannelPage:
         self.p, self.name, self.pk, self.cid, self.vivo_app = p, name, pk, cid, vivo_app
         self.stage, self.why, self.raw_focus = "", "", ""
         self.no_row = False
+        self.hidden = False
         self.skeleton = ""
 
     # ---------- 认页与认行 ----------
@@ -556,9 +595,14 @@ class ChannelPage:
             at = [b[1] < p.H * 0.22 for t, b, _ in p.texts(root) if t == name]
             title = "顶部" if any(at) else ("列表" if at else "无")
             self.skeleton = self._skeleton(root)
-            return f"标题{title}，允许通知开关 {len(allow_switches(p, root))} 个，开关 {len(p.switches(root))} 个"
+            text = f"标题{title}，允许通知开关 {len(allow_switches(p, root))} 个，开关 {len(p.switches(root))} 个"
         except Exception:
             return ""
+        # 遮罩挡着的页面也读成「开关 0 个」，补一句才分得清是没适配还是有弹窗（#557）
+        try:
+            return text + p.residual_note("；", root)
+        except Exception:
+            return text          # 这个函数从不抛：摘要读到了就先给摘要，诊断失败不把它一起吞掉
 
     def _skeleton(self, root):
         """#427 要的答案：名字挂在哪个节点上。同一次运行里同一布局只留第一份，最多两份。"""
@@ -611,6 +655,7 @@ class ChannelPage:
             self.stage = self._unopened_stage()
             return None
         self.stage = ROW_NOT_FOUND
+        seen, bottom = False, False      # 名字在这一页出现过没有；列表翻到底没有
         for _ in range(9):
             if p.locked():
                 raise ScreenLocked("手机锁屏了")
@@ -621,6 +666,7 @@ class ChannelPage:
             vivo = vivo_page(self._focus())
             parents = {c: n for n in root.iter() for c in n}
             texts = p.texts(root)
+            seen = seen or any(text == name for text, _, _ in texts)
             floor = group_floor(texts) if vivo else None
             if vivo and self.vivo_app is None and floor is not None:
                 # 这一屏有「类别」分组，说明是应用通知页：先记下 App 名。往下翻页后顶栏可能收起来（#336）
@@ -656,6 +702,7 @@ class ChannelPage:
                 # 这条路绕过了 scroll_more 的「没标可滚动就不滑」守卫，所以照它的规矩补一次焦点检查：
                 # 滑动把页面带走了就停下，不当成「没找到这一行」
                 if not (vivo and off_screen_name(p, root, parents, name)):
+                    bottom = True
                     break
                 focus, before = p.focus(), p.sig()
                 p.scroll()
@@ -663,12 +710,16 @@ class ChannelPage:
                     self.stage = "应用通知页翻页时离开了"
                     return None
                 if p.sig() == before:
+                    bottom = True
                     break                     # 滑了没动：列表到底了，再滑也是空转
             root = None
         # 「没认出行」不等于「页面上没有这一行」：渠道名写在 CheckBox 上（#427）、own() 拿不到行容器、
         # 页面没标可滚动或翻页到上限时，行还在页面上而这轮没认出来。只有这一屏除了总开关再没有别的开关
         # （应用通知整体关闭时的样子）才敢断言没有这一行。
         self.no_row = bool(shown) and len(p.switches(p.tree())) == 1
+        # #576：翻到列表底、这个名字一次都没在这一页出现过，才算系统没把渠道放到界面上。
+        # 名字还在页面上的（#427 那批挂在 CheckBox 或认不出的容器里）不算 —— 那是没认出，不是没有。
+        self.hidden = bool(shown) and bottom and not seen
         return None
 
     def open(self, rounds=12):
@@ -685,7 +736,7 @@ class ChannelPage:
             switch = self._enter_app_page()
         if switch:
             return Reached(switch)
-        return Unreached(self.stage, self.why, self._hint(), self.no_row, self.skeleton)
+        return Unreached(self.stage, self.why, self._hint(), self.no_row, self.skeleton, self.hidden)
 
 
 def _switch_of(reached):
@@ -791,10 +842,16 @@ def page_hint(p, name):
     return ChannelPage(p, name)._hint()
 
 
-def notifications_denied(p, pk):
-    """应用通知是否被系统整体关闭。安卓 13 起看 POST_NOTIFICATIONS 权限；更早的系统没有这个权限，
-    只有 appops 能问（华为 HarmonyOS 4.2 / 安卓 12，#426）。有的系统 dumpsys notification 看不出来：
-    渠道页的开关显示「关」，渠道记录仍是「开」（三星 9 个、vivo 2 个，错误日志 10-29；华为 #241 同样现象）。"""
+def notifications_state(p, pk):
+    """应用通知是否被系统整体关闭：True 关着 / False 没关 / None 读不出来。
+
+    安卓 13 起看 POST_NOTIFICATIONS 权限；更早的系统没有这个权限，只有 appops 能问（华为
+    HarmonyOS 4.2 / 安卓 12，#426）。有的系统 dumpsys notification 看不出来：渠道页的开关显示
+    「关」，渠道记录仍是「开」（三星 9 个、vivo 2 个，错误日志 10-29；华为 #241 同样现象）。
+
+    三态只在「记进本机 UI 未暴露名单」这一处要紧：那条名单是持久的，把一次读失败当成「没关」
+    会让一个其实关得掉的渠道从扫描里永久消失（#576 复盘的取舍）。判 APP_DENIED 时仍走
+    `notifications_denied()`，那里把「不知道」当「没关」。"""
     try:
         # 不加 grep -m：提前退出会让 dumpsys 收到 SIGPIPE，u2 判「shell output invalid」（#205）
         out = p.d.shell(f"dumpsys package {shlex.quote(pk)} | grep 'POST_NOTIFICATIONS: granted='"
@@ -806,7 +863,18 @@ def notifications_denied(p, pk):
             return False                # 这个权限就代表着总开关，它开着就不用再问 appops
         if "POST_NOTIFICATIONS: granted=false" in out:
             return True
-    return appops_denied(p, pk)
+    try:
+        mode = appops_mode(p.d, pk)
+    except adb_link.DeviceLost:
+        return None
+    if mode == "unknown":
+        return None
+    return mode in APPOPS_DENIED
+
+
+def notifications_denied(p, pk):
+    """应用通知是否被系统整体关闭。读不出来按「没关」处理，见 `notifications_state()`。"""
+    return notifications_state(p, pk) is True
 
 
 # cmd appops 的 POST_NOTIFICATION 模式里算「关掉」的那两个；default / allow / foreground / 读不出来都按「没关」处理
@@ -884,6 +952,22 @@ def disabled_at(p, xy):
     return row_disabled_at(p.tree(), xy)
 
 
+MISMATCH_PER_RUN = 3    # 一次运行最多补几条 MISMATCH 判据读数：额外命令只在不一致时发生，且要封顶
+
+
+def mismatch_probe(p, pk, cid, current, denied=None):
+    """MISMATCH 的一条判据读数（#582）：页面上关着、渠道记录里开着，差在哪一项。
+    只用 toggle 已经读到的 importance；应用级结论已有（denied）就不再问一次。"""
+    if p.mismatch_probes >= MISMATCH_PER_RUN:
+        return ""
+    p.mismatch_probes += 1
+    importance = current.get((pk, cid), ("", 0, False))[1]
+    if denied is None:
+        denied = notifications_denied(p, pk)
+    return (f"mismatch\t{pk}\t{cid}\timportance={importance}"
+            f"\tapp_notifications={'denied' if denied else 'allowed'}")
+
+
 def toggle(p, pk, cid, want_on, name="", allowed=()):
     name = (name or "").strip()     # 渠道名可能带空格（一加 13「福利活动 」），页面文字是去掉空格的（错误日志 10-29）
     try:
@@ -899,12 +983,20 @@ def toggle(p, pk, cid, want_on, name="", allowed=()):
         page = ChannelPage(p, name, pk, cid)
         reached = page.open()
         if not isinstance(reached, Reached):
+            absent = not want_on and reached.hidden
+            app_state = notifications_state(p, pk) if absent or (not want_on and reached.no_row) else False
             # 应用通知整体关着时，应用通知页只列总开关：这个渠道本来就不会出现在页面上，不是没认出（#426）
-            if not want_on and reached.no_row and notifications_denied(p, pk):
+            if not want_on and reached.no_row and app_state is True:
                 return Outcome(APP_DENIED)
+            # 页面打得开、页面上确实没有这一行、App 通知明确没关：系统没把这个渠道放到界面上（#576）。
+            # 关不掉，也不该每轮都报同一条失败 —— 由 run() 记进本机名单，下次扫描不再列出。
+            # 总开关读不出来时不记：名单是持久的，一次读失败会让一个其实关得掉的渠道永久消失。
+            if absent and app_state is False:
+                return Outcome(UI_HIDDEN)
             # 只记 Activity、卡在哪一环和开关数量，不记页面内容；适配新系统靠它。
+            unknown = "（应用通知总开关读不出来）" if absent and app_state is None else ""
             return Outcome(NOT_CONFIRMED,
-                           f"未确认「{name}」渠道页及通知开关，跳过（停在 {p.focus() or '未知页面'}；{reached.text}）",
+                           f"未确认「{name}」渠道页及通知开关，跳过（停在 {p.focus() or '未知页面'}；{reached.text}{unknown}）",
                            reached.skeleton)
         if disabled_at(p, reached.switch[2]):
             return Outcome(GREYED)
@@ -930,9 +1022,11 @@ def toggle(p, pk, cid, want_on, name="", allowed=()):
             if state(current, apps, pk, cid) == desired:
                 return Outcome(DONE)
             if switch[1] == want_on:
-                if not want_on and notifications_denied(p, pk):
+                denied = notifications_denied(p, pk) if not want_on else None
+                if denied:
                     return Outcome(APP_DENIED)
-                return Outcome(MISMATCH, "界面状态与渠道实际状态不一致，未继续点击")
+                return Outcome(MISMATCH, "界面状态与渠道实际状态不一致，未继续点击",
+                               mismatch_probe(p, pk, cid, current, denied))
             time.sleep(0.25 + 0.3 * attempt)
         return Outcome(UNCHANGED, "点击后渠道状态未改变")
     except (StopBatch, adb_link.DeviceLost, ScreenLocked):
@@ -941,8 +1035,10 @@ def toggle(p, pk, cid, want_on, name="", allowed=()):
         gone = adb_link.lost_from(e, p.serial)   # 读屏库的断线异常不是 RuntimeError，以前带着堆栈退出（错误日志 10-28）
         if gone is not None:
             raise gone from e
-        if isinstance(e, RuntimeError):
-            return Outcome(ERROR, str(e))
+        # 读屏这一次没读成（手机版「读屏请求超时」）也只是这个渠道没处理，后面照常跑（#731）
+        slow = adb_link.read_failed(e)
+        if isinstance(e, RuntimeError) or slow:
+            return Outcome(ERROR, slow or str(e))
         raise
 
 
@@ -956,10 +1052,11 @@ def main():
         # 读屏服务被占用、启动失败等：给出原因，不打印 Python 报错堆栈（错误日志 10-27）
         sys.exit(f"✗ {e}")
     except Exception as e:
-        gone = adb_link.lost_from(e, sys.argv[2] if len(sys.argv) > 2 else None)
-        if gone is None:
+        # 断线 / 读屏慢一次：给一句人话，不打印 Python 报错堆栈（#731）
+        message = adb_link.failure_message(e, sys.argv[2] if len(sys.argv) > 2 else None)
+        if message is None:
             raise
-        sys.exit(f"✗ {gone}")
+        sys.exit(f"✗ {message}")
 
 
 def run(a):
@@ -976,7 +1073,11 @@ def run(a):
     if cmd == "scan":
         locked, foreground = set(), set()
         d, app_off = parse(reader, locked, foreground)
-        short = fixed = fg_service = 0
+        store = UiHidden(BACKUPS, phone_model(reader))
+        if "--reset" in a[3:]:
+            store.clear()       # 换系统或 App 升级后渠道可能重新暴露：清空后这一轮重新判定
+        hidden = store.load()
+        short = fixed = fg_service = ui_hidden = 0
         rows = []
         for (pk, cid), (name, imp, deleted) in sorted(d.items()):
             judgement = classify(name, cid, foreground_service=(pk, cid) in foreground)
@@ -988,6 +1089,8 @@ def run(a):
                     short += 1
                 elif (pk, cid) in locked:
                     fixed += 1
+                elif (pk, cid) in hidden:
+                    ui_hidden += 1      # chan-off 见过这个 App 的通知页，上面根本没有这一行（#576）
                 else:
                     rows.append((pk, cid, name))
         labels = app_labels(reader, [pk for pk, _, _ in rows])
@@ -999,6 +1102,8 @@ def run(a):
             print(f"另有 {fixed} 个渠道属于系统锁定、不允许关闭的系统应用，未列入清单", file=sys.stderr)
         if fg_service:
             print(f"另有 {fg_service} 个前台服务渠道未列入清单", file=sys.stderr)
+        if ui_hidden:
+            print(f"另有 {ui_hidden} 个渠道本机 UI 未暴露，未列入清单", file=sys.stderr)
         return
     if cmd in ("off", "on"):
         want = cmd == "on"
@@ -1008,6 +1113,7 @@ def run(a):
         t0 = time.time(); changed = 0; failures = 0
         stay_on, awake = None, False
         exemptions, gone, halted = set(), False, False
+        hidden = None               # 「本机 UI 未暴露」名单，第一次遇到才读型号（少一次 adb 往返）
         todo = []
         for pk, cid, label in items:
             st = state(d, app_off, pk, cid)
@@ -1020,7 +1126,7 @@ def run(a):
                 continue
             else:
                 outcome = Outcome(ALREADY)          # 已经是目标状态，不打印
-            show(outcome, label, want)
+            show(outcome, label, want, pk)
             if failed(outcome, want):
                 failures += 1
         retry, reached = [], 0
@@ -1042,7 +1148,7 @@ def run(a):
                             failures -= 1       # 其实已经改过来了
                             reached += 1
                             changed += toggled(outcome)
-                            show(outcome, label, want)
+                            show(outcome, label, want, pk)
                         else:
                             queue.append((pk, cid, label))
                     if not queue:
@@ -1092,7 +1198,11 @@ def run(a):
                         changed += toggled(outcome)
                     if exempt_from_recheck(outcome):
                         exemptions.add((pk, cid))
-                    show(outcome, label, want)
+                    if outcome.kind == UI_HIDDEN:
+                        if hidden is None:
+                            hidden = UiHidden(BACKUPS, phone_model(reader))
+                        hidden.remember([(pk, cid)])
+                    show(outcome, label, want, pk)
                 if halted:
                     break                       # 锁屏、点错开关、断开：整批停下，不再重试
             if p is not None and not gone:
@@ -1100,7 +1210,7 @@ def run(a):
         finally:
             if p is not None:
                 p.close()
-            if stay_on is not None:
+            if stay_on is not None and not ON_PHONE:      # 手机版没改过这项设置，也就没有要改回的（#731）
                 try:
                     reader.shell(f"settings put global stay_on_while_plugged_in {stay_on}")
                 except RuntimeError:
@@ -1120,9 +1230,10 @@ def run(a):
         if st == "ON" and not protected and (pk, cid) not in exemptions:
             bad += 1
             if cmd == "off":
-                print(f"  仍开着：{label}")       # 以前只给数量，看不出是哪一个（#115）
+                print(f"  仍开着：{label}（{pk}）")   # 后缀包名同失败行（#582）：同名渠道才分得清（#751）
         if cmd == "verify":
-            print(f"{st:4} {label}" + ("（受保护，不参与营销关闭）" if protected else ""))
+            note = "，受保护，不参与营销关闭" if protected else ""
+            print(f"{st:4} {label}（{pk}{note}）")
     print(f"营销渠道仍开着: {bad} 个")
     if cmd == "on":
         pending = sum(state(d, app_off, pk, cid) != "ON" for pk, cid, _ in items)

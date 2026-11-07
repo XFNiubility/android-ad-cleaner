@@ -49,6 +49,47 @@ class SwitchTests(unittest.TestCase):
         self.assertEqual([(t, c) for t, c, _ in phone().switches(root)],
                          [("每次联网时通知", True), ("自动更新", True), ("个性化广告推荐", False)])
 
+    def test_state_suffix_in_title_is_stripped_at_the_source(self):
+        # #565：vivo 把状态拼进标题尾部。剥掉后 off() 的回读核对不再扑空；
+        # 坐标不同的真实两行各自保留自己的标题。
+        root = ET.fromstring(
+            '<hierarchy><node bounds="[0,300][1168,900]">'
+            '<node text="个性化推荐，开启" bounds="[60,350][700,420]"/>'
+            '<node class="android.widget.Switch" checkable="true" checked="true" bounds="[990,350][1080,420]"/>'
+            '<node text="个性化广告推荐，关闭" bounds="[60,500][700,570]"/>'
+            '<node class="android.widget.Switch" checkable="true" checked="false" bounds="[990,500][1080,570]"/>'
+            '</node></hierarchy>')
+        self.assertEqual([t for t, _, _ in phone().switches(root)],
+                         ["个性化推荐", "个性化广告推荐"])
+
+    def test_whole_string_state_word_content_desc_is_still_not_a_title(self):
+        # 「开启，开关」这类整串状态词（content-desc 形态）依旧不算标题（与 #565 剥尾缀同一份词表）。
+        root = ET.fromstring(
+            '<hierarchy><node bounds="[0,300][1168,500]">'
+            '<node class="android.widget.Switch" checkable="true" checked="true" content-desc="开启，开关" bounds="[990,350][1080,420]"/>'
+            '</node></hierarchy>')
+        self.assertEqual([t for t, _, _ in phone().switches(root)], [""])
+
+    @patch.object(fast.time, "sleep")
+    def test_off_reports_both_switches_when_titles_carry_state_suffixes(self, _sleep):
+        # #565 的假设备验收：一页两个带状态字的开关，关掉后标题变化 → 调整 2 项，无「关不掉」。
+        # 不 mock switches：title_of 的剥尾缀必须在真实产出处生效。
+        xml_on = ('<hierarchy><node bounds="[0,300][1168,900]">'
+                  '<node text="个性化推荐，开启" bounds="[60,350][700,420]"/>'
+                  '<node class="android.widget.Switch" checkable="true" checked="true" bounds="[990,350][1080,420]"/>'
+                  '<node text="个性化广告推荐，开启" bounds="[60,500][700,570]"/>'
+                  '<node class="android.widget.Switch" checkable="true" checked="true" bounds="[990,500][1080,570]"/>'
+                  '</node></hierarchy>')
+        xml_off = xml_on.replace("，开启", "，关闭").replace('checked="true"', 'checked="false"')
+        p = phone()
+        # wait / plan / shift 探测都看到 ON 页；点击后的回读才看到 OFF
+        p.tree = Mock(side_effect=[ET.fromstring(xml_on)] * 3 + [ET.fromstring(xml_off)] * 12)
+        p.focus = Mock(return_value="app/settings")
+        p.click, p.confirm = Mock(), Mock(return_value=None)
+        p.scroll_more = Mock(return_value=False)
+        self.assertEqual(p.off(only=["个性化"], page="商店·个性化推荐"), 2)
+        self.assertEqual(p.changed, [("商店·个性化推荐", "个性化推荐"), ("商店·个性化推荐", "个性化广告推荐")])
+
     def test_offscreen_custom_switch_and_radio_are_not_touched(self):
         p = phone()
         root = ET.fromstring('''<hierarchy>
@@ -74,10 +115,21 @@ class SwitchTests(unittest.TestCase):
         p.d.screenshot.assert_not_called()
 
     def test_protection_polarity(self):
-        for text in ("限制广告跟踪", "防止广告追踪", "关闭个性化推荐"):
-            self.assertIs(fast.want_state(text), True)
+        for text in ("限制广告跟踪", "防止广告追踪", "关闭个性化推荐",
+                     "选择停用广告个性化功能"):      # Google 简体译名把祈使动词放在否定词前面（#604）
+            with self.subTest(text=text):
+                self.assertIs(fast.want_state(text), True)
         self.assertIs(fast.want_state("个性化广告推荐"), False)
+        self.assertIs(fast.want_state("选择广告推荐"), False)   # 只多认一个动词前缀，不认没否定词的行
         self.assertIsNone(fast.want_state("关闭推送"))
+
+    def test_protection_polarity_traditional(self):
+        """繁体界面的同一批保护开关（#604；#498 只覆盖了渠道线词表）。"""
+        for text in ("限制廣告追蹤", "關閉個人化推薦", "選擇停用廣告個人化", "停用廣告個人化"):
+            with self.subTest(text=text):
+                self.assertIs(fast.want_state(text), True)
+        self.assertIs(fast.want_state("廣告推薦"), False)
+        self.assertIsNone(fast.want_state("關閉推送"))
 
     @patch.object(fast.time, "sleep")
     def test_disappeared_switch_is_not_reported_as_success_or_retapped(self, _sleep):
@@ -130,10 +182,15 @@ class InputTests(unittest.TestCase):
         p.edit_ready = Mock(return_value=True)
         p.focused_text = Mock(return_value="%%%%")
         self.assertFalse(p.type_text("广告", timeout=0.5))
-        self.assertEqual(p.d.shell.call_args.args, ("input keyevent BACK",))
+        # 退场交给调用方，type_text 不再自己按返回（#639）
+        self.assertNotIn("input keyevent BACK", [c.args[0] for c in p.d.shell.call_args_list])
 
-    def search_phone(self, with_result):
+    def search_phone(self, with_result, search_page=False, results=None, exit_code=0):
+        """search_page：系统有直达设置搜索页的动作（ColorOS 的 MAIN_SEARCH，#650）。"""
         p = phone()
+        p.reader.shell = Mock(return_value=types.SimpleNamespace(
+            exit_code=exit_code,
+            output="Starting: Intent" if search_page else "Error: Activity not started, unable to resolve Intent"))
         home = ET.fromstring('<node text="搜索设置项" bounds="[50,100][1100,200]"/>')
         edit = ET.fromstring('<node text="广告" class="android.widget.EditText" bounds="[50,100][1000,200]"/>')
         result = ET.fromstring('<node text="广告" class="android.widget.TextView" bounds="[50,400][1000,500]"/>')
@@ -146,10 +203,46 @@ class InputTests(unittest.TestCase):
         p.edit_ready = Mock(return_value=True)
         p.focus = lambda: "settings/result" if selected else "settings/search"
         def texts():
-            nodes = ([edit, result] if with_result else [edit]) if typed else [home]
+            nodes = (results or ([edit, result] if with_result else [edit])) if typed else [home]
             return [(n.get("text"), fast.bounds(n), n) for n in nodes]
         p.texts = texts
         return p
+
+    def test_direct_search_page_skips_the_settings_home(self):
+        p = self.search_phone(True, search_page=True)
+        with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
+            self.assertTrue(p.setting("广告"))
+        commands = [c.args[0] for c in p.reader.shell.call_args_list]
+        self.assertIn("am start -f 0x10008000 -a oplus.intent.action.settings.MAIN_SEARCH", commands)
+        self.assertNotIn("am start -f 0x10008000 -a android.settings.SETTINGS", commands)
+        self.assertEqual(p.click.call_count, 1)           # 只点结果，没有找框点框
+
+    def test_unresolved_search_action_falls_back_to_the_settings_home(self):
+        p = self.search_phone(True)
+        with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
+            self.assertTrue(p.setting("广告"))
+        commands = [c.args[0] for c in p.reader.shell.call_args_list]
+        self.assertIn("am start -f 0x10008000 -a android.settings.SETTINGS", commands)
+
+    def test_search_action_with_a_nonzero_exit_does_not_count_as_opened(self):
+        """am start 打印了 Starting 但退出码非零：不当搜索页已打开，回设置首页。"""
+        p = self.search_phone(True, search_page=True, exit_code=1)
+        with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
+            self.assertTrue(p.setting("广告"))
+        commands = [c.args[0] for c in p.reader.shell.call_args_list]
+        self.assertIn("am start -f 0x10008000 -a android.settings.SETTINGS", commands)
+
+    def test_path_picks_the_result_with_that_location(self):
+        edit = ET.fromstring('<node text="广告" class="android.widget.EditText" bounds="[50,100][1000,200]"/>')
+        rows = [ET.fromstring(x) for x in (
+            '<node text="广告" bounds="[50,400][1000,450]"/>',
+            '<node text="通知 > 广告" bounds="[50,450][1000,500]"/>',
+            '<node text="广告" bounds="[50,600][1000,650]"/>',
+            '<node text="隐私 > 广告" bounds="[50,650][1000,700]"/>')]
+        p = self.search_phone(True, search_page=True, results=[edit, *rows])
+        with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
+            self.assertTrue(p.setting("广告", path="隐私 > 广告"))
+        self.assertEqual(p.click.call_args.args, (525, 625))
 
     def test_search_does_not_treat_input_as_result(self):
         p = self.search_phone(False)
@@ -276,8 +369,11 @@ class LaunchTests(unittest.TestCase):
     def test_late_permission_without_deny_button_stops(self):
         p = phone()
         p.d.shell.return_value = types.SimpleNamespace(exit_code=0, output="Starting")
-        p.focus = Mock(side_effect=["com.example/.Main", "com.android.permissioncontroller/.GrantPermissionsActivity"])
+        # 失败消息现在带落点（#547）
+        p.focus = Mock(side_effect=["com.example/.Main", "com.android.permissioncontroller/.GrantPermissionsActivity",
+                                    "com.android.permissioncontroller/.GrantPermissionsActivity"])
         p.texts = Mock(return_value=[("首页", (), None)])
+        p.tree = Mock(return_value=ET.fromstring('<hierarchy rotation="0"></hierarchy>'))
         p.dismiss = Mock(return_value=None)
         with self.assertRaisesRegex(RuntimeError, "离开前台"):
             p.start("com.example", settle=0)
@@ -286,19 +382,49 @@ class LaunchTests(unittest.TestCase):
     def test_start_leaving_target_app_stops_before_dismiss_or_click(self):
         p = phone()
         p.d.shell.return_value = types.SimpleNamespace(exit_code=0, output="Events injected: 1")
-        p.focus = Mock(side_effect=["com.example/.Main", "com.other/.Account"])
+        # 失败消息现在带落点（#547）：多读一次前台，页面结构也要读得到。
+        # 连续 3 帧读到别的 App 才判离开（#581），落点那一次再多读一次。
+        p.focus = Mock(side_effect=["com.example/.Main"] + ["com.other/.Account"] * 4)
         p.texts = Mock(return_value=[])
+        p.tree = Mock(return_value=ET.fromstring('<hierarchy rotation="0"></hierarchy>'))
         p.dismiss = Mock()
         with patch.object(fast.time, "time", side_effect=itertools.count()), patch.object(fast.time, "sleep"):
             with self.assertRaisesRegex(RuntimeError, "离开前台"):
                 p.start("com.example")
         p.dismiss.assert_not_called()
 
+    def test_leaving_foreground_error_carries_the_actual_landing_page(self):
+        # #547：「启动后离开前台」命中 79 份上报、51 个型号，缺的都是「是谁盖住了」。
+        p = phone()
+        p.d.shell.return_value = types.SimpleNamespace(exit_code=0, output="Events injected: 1")
+        p.focus = Mock(side_effect=["com.example/.Main", "com.other/.Account"] + ["com.other/.Account"] * 4)
+        p.texts = Mock(return_value=[])
+        p.tree = Mock(return_value=ET.fromstring('<hierarchy rotation="0"></hierarchy>'))
+        p.dismiss = Mock()
+        with patch.object(fast.time, "time", side_effect=itertools.count()), patch.object(fast.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, r"离开前台.*停在 com\.other/\.Account"):
+                p.start("com.example")
+        p.dismiss.assert_not_called()
+
+    def test_never_entered_foreground_error_carries_the_actual_landing_page(self):
+        # #547：另一条短路（deadline 到了还没到目标包）同样带上落点。
+        p = phone()
+        p.d.shell.return_value = types.SimpleNamespace(exit_code=0, output="Starting")
+        p.focus = Mock(side_effect=["com.other/.Account"] * 20)
+        p.tree = Mock(return_value=ET.fromstring('<hierarchy rotation="0"></hierarchy>'))
+        p.texts = Mock(return_value=[])
+        p.dismiss = Mock()
+        with patch.object(fast.time, "monotonic", side_effect=itertools.count()), patch.object(fast.time, "sleep"):
+            with self.assertRaisesRegex(RuntimeError, r"没有进入前台.*停在 com\.other/\.Account"):
+                p.start("com.example")
+
     def test_dismiss_leaving_target_app_is_not_accepted_as_success(self):
         p = phone()
         p.d.shell.return_value = types.SimpleNamespace(exit_code=0, output="Events injected: 1")
-        p.focus = Mock(side_effect=["com.example/.Main"] * 3 + ["com.other/.Main"])
+        # 失败消息现在带落点（#547）；连续 3 帧读到别的 App 才算离开（#581）
+        p.focus = Mock(side_effect=["com.example/.Main"] * 3 + ["com.other/.Main"] * 4)
         p.texts = Mock(return_value=[("首页", (), None)])
+        p.tree = Mock(return_value=ET.fromstring('<hierarchy rotation="0"></hierarchy>'))
         p.dismiss = Mock()
         with patch.object(fast.time, "time", side_effect=itertools.count(0, .1)), patch.object(fast.time, "sleep"):
             with self.assertRaisesRegex(RuntimeError, "离开前台"):

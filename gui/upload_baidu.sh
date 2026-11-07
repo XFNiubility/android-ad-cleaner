@@ -6,7 +6,7 @@
 # 前提：GitHub Release 已公开；本机装了 BaiduPCS-Go 并已登录一次（在自己的终端里）：
 #   BaiduPCS-Go login -bduss='…' -stoken='…'
 # BDUSS / STOKEN 等于网盘账号登录凭证，不要写进脚本、仓库或聊天记录。
-# 网盘目录：/安卓去广告/v<版本>/<下载页里的 folder>/<安装包>；SHA256SUMS.txt、安装说明.txt 放在版本目录下。
+# 网盘目录沿用改名前的 /安卓去广告（已有分享链接指向它，#668）：/安卓去广告/v<版本>/<下载页里的 folder>/<安装包>；SHA256SUMS.txt、安装说明.txt 放在版本目录下。
 # 每个文件一条分享链接；/安卓去广告 整个目录（全部版本）那条有就复用。
 # 网盘里早期手动建的 /去广告/<平台>/ 也同步换成新版：旧安装包挪到不分享的 /去广告-旧版/，分享链接不变。
 set -eo pipefail
@@ -65,7 +65,7 @@ if "$PCS" ls "$LEGACY" >/dev/null 2>&1; then
   "$PCS" upload --policy overwrite "$STAGE/legacy/先看我-选哪个文件夹.txt" "$LEGACY"
   while IFS=$'\t' read -r id folder file; do
     "$PCS" ls "$LEGACY/$folder" >/dev/null 2>&1 || "$PCS" mkdir "$LEGACY/$folder" >/dev/null
-    for old in $("$PCS" ls "$LEGACY/$folder" | grep -oE 'AndroidAdCleaner-[0-9.]+-[a-z0-9-]+\.(dmg|exe|zip)' | grep -vF -- "-$VER-" | sort -u); do
+    for old in $("$PCS" ls "$LEGACY/$folder" | grep -oE 'AndroidAdCleaner-[0-9.]+-[a-z0-9-]+\.(dmg|exe|zip|apk)' | grep -vF -- "-$VER-" | sort -u); do
       "$PCS" mkdir "$ARCHIVE/$folder" >/dev/null 2>&1 || true
       "$PCS" mv "$LEGACY/$folder/$old" "$ARCHIVE/$folder"
     done

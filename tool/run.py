@@ -1,15 +1,17 @@
 #!/usr/bin/env python3
-"""手机去广告 · 总入口。所有命令都要带 -s <序列号>（adb devices 第一列）。
+"""肉呆去广告 · 总入口。所有命令都要带 -s <序列号>（adb devices 第一列）。
 
   python3 tool/run.py devices                      列出连着的手机、型号、系统版本、有没有现成机型脚本
   python3 tool/run.py -s 序列号 check              只读：锁屏、机型脚本匹配、广告包挂起状态
   python3 tool/run.py -s 序列号 ui-check           只读：检查手机读屏服务，不点击任何开关
   python3 tool/run.py -s 序列号 backup             改动前快照，存到 backups/<型号>-<时间>/
   python3 tool/run.py -s 序列号 recipe [段名 …]     跑本机型机型脚本（不带段名=全跑）
+  python3 tool/run.py -s 序列号 adapt survey       只读：拿同家族验证过的直达逐条试入口，报打不开与命中的词
   python3 tool/run.py -s 序列号 adapt explore [包名 …]  只读：探路新机型 → 探路-<型号>.tsv（末列供人工勾选）
   python3 tool/run.py adapt gen 探路-<型号>.tsv      把人工勾选的开关生成 recipe 草稿（不碰手机；草稿≠适配）
   python3 tool/run.py -s 序列号 adapt check 草稿.py  安全模式自检草稿，输出适配报告（找不到就如实说找不到）
   python3 tool/run.py -s 序列号 chan-scan          只读：列出开着的营销通知渠道 → backups/.../channels.tsv
+                                                  加 --reset 先清空「本机 UI 未暴露」名单再扫
   python3 tool/run.py -s 序列号 chan-off 清单.tsv   关掉清单里的渠道
   python3 tool/run.py -s 序列号 chan-on  清单.tsv   还原
   python3 tool/run.py -s 序列号 suspend 包名 …       挂起广告包（先征得机主同意），记录到 backups/.../suspended.txt
@@ -30,9 +32,11 @@ for _st in (sys.stdout, sys.stderr):
         pass
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import adb_link
-import events
 import troubleshooting
+import wait
 from backups import Backups, root_from_env
+from entries import FAMILY          # 品牌族只此一份；广告包、参考脚本与版本比较都按它归
+from host import ON_PHONE           # 手机版不写插电常亮（#731）
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(ROOT, "tool")
@@ -161,31 +165,34 @@ def prop(serial, k):
     return sh(serial, f"getprop {k}")
 
 
-def android_release(serial):
-    """按 ANDROID_RELEASE_KEYS 的顺序取第一个非空值，都读不到返回空串。"""
-    for k in ANDROID_RELEASE_KEYS:
-        value = prop(serial, k)
+def first_nonempty(values):
+    for value in values:
         if value:
             return value
     return ""
+
+
+def android_release(serial):
+    """按 ANDROID_RELEASE_KEYS 的顺序取第一个非空值，都读不到返回空串。"""
+    return first_nonempty(prop(serial, k) for k in ANDROID_RELEASE_KEYS)
+
+
+# 设备名的候选属性：同一台手机在不同 ROM 上只暴露其中一个。设备列表与 status-json 都按
+# 这里的顺序取第一个非空，两处显示的名字才不会分叉。
+NAME_PROPS = ("ro.vendor.oplus.market.name", "ro.product.marketname", "ro.product.vendor.marketname")
 
 
 def info(serial):
     return {
         "brand": prop(serial, "ro.product.brand"),
         "model": prop(serial, "ro.product.model"),
-        "name": prop(serial, "ro.vendor.oplus.market.name") or prop(serial, "ro.product.marketname") or prop(serial, "ro.product.vendor.marketname"),
+        "name": first_nonempty(prop(serial, k) for k in NAME_PROPS),
         "build": prop(serial, "ro.build.display.id"),
         "os": prop(serial, "ro.mi.os.version.incremental") or prop(serial, "ro.build.version.opporom")
               or prop(serial, "ro.vivo.os.build.display.id") or prop(serial, "ro.build.version.magic"),
         # 都读不到时给「未知」：诊断输出留空会被当成没读到（#195 正文第 4 条）
         "android": android_release(serial) or "未知",
     }
-
-
-FAMILY = {"oppo": "oppo", "oneplus": "oppo", "realme": "oppo", "honor": "honor",
-          "xiaomi": "xiaomi", "redmi": "xiaomi", "poco": "xiaomi", "vivo": "vivo", "iqoo": "vivo",
-          "meizu": "meizu"}
 
 
 def ad_packages(brand):
@@ -199,6 +206,10 @@ REFERENCE = {"oppo": "oppo-PLP120", "honor": "honor-PNM-AN10", "xiaomi": "xiaomi
 
 # 把脚本 BUILD 或设备版本抽成版本核心时要先切掉的机型名标记（#319）。
 VERSION_MARKER = {"oppo": "_", "vivo": "_A_", "honor": " ", "meizu": "Flyme"}
+
+# vivo 的 build 不都带机型前缀：Android 17 起有的机器直接报 AOSP 平台构建号（#580 的
+# CP2A.260605.016），没有 _A_ 可切，整条就是版本核心。按形状认，不写死某一代的首字母。
+AOSP_BUILD_ID = re.compile(r"^[A-Z]{1,3}\d[A-Z0-9]{0,2}\.\d{6}\.\d{3}")
 
 
 def recipe_meta(path):
@@ -215,9 +226,10 @@ def version_core(value, fam):
     v = (value or "").strip()
     marker = VERSION_MARKER.get(fam)
     if marker:
-        if marker not in v:
+        if marker in v:
+            v = v.split(marker, 1)[1]
+        elif fam != "vivo" or not AOSP_BUILD_ID.match(v):
             return ""
-        v = v.split(marker, 1)[1]
     return re.sub(r"\(.*$", "", v).strip()
 
 
@@ -310,20 +322,10 @@ def locked(serial):
     return adb_link.keyguard_showing(sh(serial, adb_link.KEYGUARD_CMD))
 
 
-def wait_unlocked(serial, timeout=90):
-    """锁屏时点亮屏幕，等机主解锁（不代替解锁）。开始执行时手机已锁屏的报告约 15 份（错误日志 10-27）。"""
-    sh(serial, "input keyevent KEYCODE_WAKEUP")
-    if not locked(serial):
-        return True
-    print(f"  ! 手机锁屏了：请解锁手机并保持亮屏，解锁后自动继续（最多等 {timeout} 秒）", flush=True)
-    events.emit("locked")
-    t = time.time()
-    while time.time() - t < timeout:
-        time.sleep(1)
-        if not locked(serial):
-            time.sleep(0.8)
-            return True
-    return False
+def wait_unlocked(serial, timeout=wait.UNLOCK_TIMEOUT):
+    """锁屏时点亮屏幕，等机主解锁。文案、节奏与事件在 wait.wait_unlocked（#709）。"""
+    return wait.wait_unlocked(lambda: locked(serial), lambda: sh(serial, adb_link.WAKEUP),
+                              timeout, now=time.time, sleep=time.sleep)
 
 
 def latest_backup(serial, create=False):
@@ -529,7 +531,7 @@ def cmd_check(serial, rest):
     print(f"机型：{i['name'] if i['name'].upper().startswith(i['brand'].upper()) else i['brand']+' '+i['name']}（{i['model']}），系统 {i['build']}，Android {i['android']}")
     print(f"锁屏：{'是（请机主解锁）' if locked(serial) else '否'}")
     if input_blocked(serial, i["brand"]):
-        print("电脑点击：被系统拒绝。" + troubleshooting.XIAOMI_INPUT)
+        print(troubleshooting.CLICK + "：被系统拒绝。" + troubleshooting.XIAOMI_INPUT)
     if r and ref:
         rb = recipe_meta(r)["build"]
         matched = version_match(i, rb, FAMILY.get((i["brand"] or "").lower()))
@@ -597,10 +599,13 @@ def cmd_recipe(serial, rest):
     safe_mode = bool(ref or not build_ok(i, recipe_meta(r)["build"]))
     if safe_mode:
         print("⚠ 安全模式：这份机型脚本不是按这台的型号和系统版本录的。只关脚本里点名的开关，找不到入口的步骤跳过。")
-    stay_on = sh(serial, "settings get global stay_on_while_plugged_in")
+    # 手机版的亮屏由 App 自己的屏幕锁保证（#728）：写进去的 7 只能靠收尾改回，而收尾会被断线跳过（#731）。
+    # None = 这台宿主没读过、也没写过，finally 就不还原。
+    stay_on = None if ON_PHONE else sh(serial, "settings get global stay_on_while_plugged_in")
     message, rc = "", 0
     try:
-        sh(serial, "settings put global stay_on_while_plugged_in 7")
+        if not ON_PHONE:
+            sh(serial, "settings put global stay_on_while_plugged_in 7")
         if wait_unlocked(serial):
             rc = py("fast.py", "-s", serial, "run", r, *(["--ref"] if safe_mode else []), *rest)
         else:
@@ -608,19 +613,20 @@ def cmd_recipe(serial, rest):
     finally:
         # 恢复插电常亮先于报错：旧代码里 sys.exit 挂起的文案要等 finally 跑完才打印，
         # 恢复这一步自己失败时，stderr 上只有那一条（恢复的错顶掉了锁屏文案）。
-        sh(serial, f"settings put global stay_on_while_plugged_in {int(stay_on) if stay_on.isdigit() else 0}")
+        if stay_on is not None:
+            sh(serial, f"settings put global stay_on_while_plugged_in {int(stay_on) if stay_on.isdigit() else 0}")
     return fail(message) if message else rc
 
 
 def cmd_chan_scan(serial, rest):
-    d = latest_backup(serial)
-    result = subprocess.run(script_cmd("chan_fast.py", "-s", serial, "scan"),
+    result = subprocess.run(script_cmd("chan_fast.py", "-s", serial, "scan", *rest),
                             capture_output=True, text=True, encoding="utf-8", errors="replace")
     if result.returncode:
         print(result.stderr or result.stdout, file=sys.stderr)
         return result.returncode
     out = result.stdout
-    f = os.path.join(d, "channels.tsv")
+    # 候选清单与关掉的清单写同一处快照目录：`<型号>-gui` 是历次共用的，写进去会盖掉历史清单（#651）
+    f = os.path.join(Backups(BACKUPS).snapshot(info(serial)["model"]), "channels.tsv")
     Path(f).write_text(
         "# 包名\t渠道id\t渠道名\t应用名。人工核对：删掉服务类（热点共享、红包、防盗、直播提醒等）后再 chan-off\n" + out, encoding="utf-8")
     print(out); print(f"候选清单：{display_backup_path(f)}（共 {out.count(chr(10))} 条）")
@@ -723,8 +729,16 @@ def cmd_quickapp(serial, rest):
         else:
             print("可挂起的快应用组件已关闭（保留项除外）；恢复：quickapp on")
             if who:
-                # 保留平台就等于留着 hap:// 入口，不能写成广告已拦下
-                print(f"hap:// 链接仍由 {handlers} 接管（保留项）：广告仍可能跳进快应用。")
+                # 保留平台就等于留着 hap:// 入口，不能写成广告已拦下。已挂起的组件也会出现在
+                # query-activities 里（suspend 不撤销 manifest 声明，#564），两种状态不能共用
+                # 「保留项」这个词：按组件所属包分点名。
+                reserved = [h for h in who if h.split("/", 1)[0] in QUICKAPP_KEEP]
+                suspended_handlers = [h for h in who if h.split("/", 1)[0] not in QUICKAPP_KEEP]
+                if reserved:
+                    print(f"hap:// 链接仍由 {'、'.join(reserved)} 接管（保留项）：广告仍可能跳进快应用。")
+                if suspended_handlers:
+                    print(f"hap:// 链接的应答方仍列出 {'、'.join(suspended_handlers)}"
+                          f"（已挂起，但系统仍声明它能接这类链接，不代表还能拉起）。")
         return 0
     if sub == "off":
         todo = [q["pkg"] for q in qs if not q["closed"] and q["method"] == "suspend" and not q["keep"]]
@@ -785,11 +799,22 @@ def cmd_quickapp(serial, rest):
 
 
 def cmd_finish(serial, rest):
-    f = os.path.join(latest_backup(serial), "stay_on.txt")
-    v = open(f, encoding="utf-8").read().strip() if os.path.exists(f) else "0"
-    sh(serial, f"settings put global stay_on_while_plugged_in {v or 0}")
+    # 原值取自带 stay_on.txt 的最近一份快照（#632）：一份都没有就不动这项设置，不能按 0 写回。
+    # 手机版没人写过这项设置，也就没有要改回的，连这一步的话都不说（#731）。
+    if not ON_PHONE:
+        f = Backups(BACKUPS).newest_with(info(serial)["model"], "stay_on.txt")
+        v = ""
+        if f:
+            with open(f, encoding="utf-8") as fh:
+                v = fh.read().strip()
+        if v.isdigit():
+            sh(serial, f"settings put global stay_on_while_plugged_in {v}")
+            print(f"插电常亮已改回 {v}")
+        elif f:
+            print("插电常亮未改动（快照里没有记下原值）")
+        else:
+            print("插电常亮未改动（没有找到改动前的快照）")
     sh(serial, "input keyevent HOME")
-    print(f"插电常亮已改回 {v or 0}")
     on = sh(serial, "settings get global development_settings_enabled") == "1"
     if on:
         msg = DEV_REMINDER.format(s=serial)
@@ -847,6 +872,10 @@ COMMANDS = {
 }
 
 
+# adapt 里要序列号的子命令。gen 不碰手机，不用带 -s；文档三处（本文件帮助、AGENTS.md、docs/04）按这条写。
+ADAPT_SERIAL_SUBS = ("survey", "explore", "check")
+
+
 def dispatch(a):
     if not a or a[0] in ("-h", "--help"):
         print(__doc__); return 0
@@ -858,6 +887,18 @@ def dispatch(a):
     adb()
     if a[0] != "-s" or len(a) < 3:
         return fail("命令格式：run.py -s <序列号> <命令>。先跑 run.py devices 看序列号")
+    # 文档里写的是 `-s 序列号 adapt <子命令>`；adapt.py 自己收的是子命令在前。
+    if a[2] == "adapt":
+        sub = a[3] if len(a) > 3 else ""
+        if sub in ("-h", "--help"):
+            print(__doc__); return 0            # 求助不是误用：与顶层 -h 一样打印总入口帮助（ADR-0005）
+        if sub == "gen":
+            return fail("adapt gen 不碰手机，不用带 -s：run.py adapt gen 探路-<型号>.tsv")
+        if sub not in ADAPT_SERIAL_SUBS:
+            return fail(f"adapt 后面跟 {' / '.join(ADAPT_SERIAL_SUBS)}（gen 不用带 -s）。"
+                        "用法：run.py -s <序列号> adapt survey")
+        adb_shell(a[1], "getprop ro.product.brand")     # 设备不在时给出与其它 -s 命令同样的人话，不是子进程 traceback
+        return py("adapt.py", sub, "-s", a[1], *a[4:])
     handler = COMMANDS.get(a[2])
     if handler is None:
         print(__doc__); return 0

@@ -4,7 +4,11 @@ BUILD = ""
 import re
 import time
 
+import adb_link
+from fast import ScreenLocked
+
 ONLY = globals().get("ONLY") or []
+FAILED_STEPS = []
 
 
 def step(name):
@@ -17,7 +21,8 @@ def step(name):
             try:
                 f()
             except Exception as e:
-                print(f"  ✗ 出错：{e}")
+                FAILED_STEPS.append(name)
+                print(f"  ✗ 未完成：{e}")
             print(f"  ({time.time()-t:.0f} 秒)")
         return f
     return deco
@@ -36,15 +41,51 @@ def dismiss(*words):
 NO = ("取消", "以后再说", "禁止", "暂不", "跳过", "我知道了")
 
 
+def open_settings(expect=("个性化服务", "通知")):
+    """进「设置」入口，落地页出现 expect 之一才算成功。
+    MagicOS 10 把入口放在「我的」页内部，位置与读法各版本不同：文字精确 → 文字包含
+    （「设置,有1条新通知」）→ 右上角图标，点错页先退回来再换下一级（#286 / #238）。"""
+    for exact in (True, False):
+        if not p.find("设置", exact=exact):
+            continue
+        before = p.sig()
+        if p.tap("设置", exact=exact, scrolls=0) and any(p.find(w, exact=True) for w in expect):
+            return True
+        if p.sig() != before:
+            p.back()
+    return p.tap_icon(list(expect))
+
+
+def open_entry(text, scrolls=0):
+    """点开会换页的菜单项，点不进去就记下停在哪一页并跳过本段。
+    p.enter 先精确匹配、落空退包含匹配，再用页面变化确认真的进去了——p.entry 只点不确认（#238）。
+    断线与锁屏照常上抛：它们不能记成「入口改名」。"""
+    try:
+        p.enter(text, scrolls=scrolls)
+    except (adb_link.DeviceLost, ScreenLocked):
+        raise
+    except RuntimeError as error:
+        print(f"  · {error}")
+        p.note_miss(text)
+        return False
+    return True
+
+
 @step("广告跟踪")
 def _():
-    if not p.setting("广告", "广告与隐私"):
-        # 部分 MagicOS 10 机型设置搜索框打不开（#88 #99），按菜单进：隐私和安全 → 其他隐私和安全功能 → 广告与隐私
-        p.d.shell("am start -f 0x10008000 -a android.settings.SETTINGS"); time.sleep(1.2)
-        p.miss = 0
-        if not (p.tap("隐私和安全", exact=True) and p.tap("其他隐私和安全功能", exact=True)
-                and p.tap("广告与隐私", exact=True)):
-            return
+    # 同代的 CLE-AN00 实测这一页能直达（#671），省掉设置搜索与三层菜单（#796）
+    try:
+        p.start("com.hihonor.id", ".oaid.ui.AdvertisingPrivacyActivity", expect="应用广告跟踪管理")
+    except (adb_link.DeviceLost, ScreenLocked):
+        raise
+    except RuntimeError:
+        if not p.setting("广告", "广告与隐私"):
+            # 部分 MagicOS 10 机型设置搜索框打不开（#88 #99），按菜单进：隐私和安全 → 其他隐私和安全功能 → 广告与隐私
+            p.d.shell("am start -f 0x10008000 -a android.settings.SETTINGS"); time.sleep(1.2)
+            p.miss = 0
+            if not (p.tap("隐私和安全", exact=True) and p.tap("其他隐私和安全功能", exact=True)
+                    and p.tap("广告与隐私", exact=True)):
+                raise RuntimeError("没找到「广告与隐私」入口")    # 兜底也不通要记成未完成（#819）
     p.tap("更多选项", scrolls=0)
     if p.find("显示系统程序", exact=True):
         p.tap("显示系统程序", exact=True, scrolls=0)
@@ -57,22 +98,29 @@ def _():
 
 @step("YOYO")
 def _():
-    p.setting("新闻资讯")
+    if not p.setting("新闻资讯"):     # 搜不到就停在本段，别在设置首页的空页面上找开关（#639）
+        raise RuntimeError("没搜到「新闻资讯」")    # 停段要记成未完成，不再算成功（#776 推翻 #639 的「不算失败」）
     dismiss(*NO)
     p.off(only=["新闻资讯"], page="YOYO 建议")
 
 
 @step("搜索")
 def _():
-    p.d.press("home"); time.sleep(0.6); p.d.press("home"); time.sleep(0.6)
-    p.d.shell(f"input swipe {p.W//2} {p.H*3//10} {p.W//2} {p.H*7//10} 300"); time.sleep(1.5)
-    p.d.press("back"); time.sleep(0.5)          # 收起键盘，菜单位置才固定
-    xy = None
-    for t, (l, tp, r, b), n in p.texts():
-        if t == "更多" and tp > p.H * 0.3:
-            xy = ((l + r) // 2, (tp + b) // 2)
+    # 同代的 CLE-AN00 实测这个页面能直达（#671）：桌面下滑手势在 adb 下不稳，还要先退回主桌面（#796）
+    p.start("com.hihonor.search", ".feature.mainpage.presentation.page.HomeActivity", expect="更多")
+
+    def more_at():
+        for t, (l, tp, r, b), _n in p.texts():
+            if t == "更多" and tp > p.H * 0.3:
+                return (l + r) // 2, (tp + b) // 2
+        return None
+
+    xy = more_at()
+    if not xy:                              # 主屏上键盘会盖住它；后台屏没有键盘，按返回会把搜索页退掉，所以先看再按
+        p.d.press("back"); time.sleep(0.5)
+        xy = more_at()
     if not xy:
-        print("  ✗ 找不到搜索框旁的「更多」"); return
+        raise RuntimeError("找不到搜索框旁的「更多」")
     p.click(*xy); time.sleep(0.6)
     p.tap("设置", exact=True, scrolls=0)
     p.tap("首页显示", exact=True)
@@ -84,11 +132,17 @@ def _():
 
 @step("负一屏")
 def _():
-    p.d.press("home"); time.sleep(0.6)
-    for _ in range(3):
-        p.d.shell(f"input swipe {p.W//7} {p.H//2} {p.W*6//7} {p.H//2} 250"); time.sleep(1.2)
-        if p.find("头像", exact=True):
-            break
+    # 负一屏是桌面的一部分，前台仍是 launcher，只按页面文字判断进没进（同代 CLE-AN00 实测，#796）
+    p.d.shell("am start -f 0x10008000 -n com.hihonor.hiboard/com.hihonor.intelligent.LauncherActivity")
+    time.sleep(2)
+    if not p.find("头像", exact=True):
+        p.d.press("home"); time.sleep(0.6)
+        for _ in range(3):
+            p.d.shell(f"input swipe {p.W//7} {p.H//2} {p.W*6//7} {p.H//2} 250"); time.sleep(1.2)
+            if p.find("头像", exact=True):
+                break
+        else:
+            raise RuntimeError("负一屏没打开，没找到头像入口")
     p.tap("头像", exact=True, scrolls=0)
     p.tap("设置", exact=True, scrolls=0)
     p.off(only=["智能推荐", "个性化广告", "个性化消息"], page="负一屏·设置")
@@ -198,13 +252,18 @@ def _():
 def _():
     p.start("com.hihonor.android.thememanager")
     p.dismiss()
-    p.tap("我的", exact=True, scrolls=0)
+    # 底栏标签只在屏幕最下方找，比原来的全屏点击严；底栏不在最下方的机型退回原写法，
+    # 到没到「我的」页由 open_settings() 的落点校验兜底（#238）。
+    if not p.tab("我的"):
+        p.tap("我的", exact=True, scrolls=0)
     p.dismiss()
-    p.tap("设置", exact=True)
-    p.tap("通知", exact=True, scrolls=0)
+    if not open_settings(("个性化服务", "通知")):
+        p.note_miss("设置")
+        return
+    p.enter("通知")
     p.off(page="主题·通知")            # 消息/短信/邮件 三项都是「内容推荐和活动信息」
     p.back()
-    p.tap("个性化服务", exact=True, scrolls=0)
+    p.enter("个性化服务")
     p.off(page="主题·个性化服务")
     p.back(3)
 
@@ -234,10 +293,14 @@ def _():
     time.sleep(1); p.dismiss()
     p.d(text="我的").click(); time.sleep(1); p.dismiss()
     p.d(resourceId="com.hihonor.cloudmusic:id/ic_setting").click(); time.sleep(1.2)
-    p.d(text="更多设置").click(); time.sleep(1.2)       # 抽屉里别翻，翻了会误点到扫一扫
-    p.tap("消息和隐私设置", exact=True)
+    if not open_entry("更多设置"):      # 抽屉里别翻，翻了会误点到扫一扫
+        return
+    # 「更多设置」页里这两个入口要滚到中部才看得到（#88 同一 build 实测），翻页保留
+    if not open_entry("消息和隐私设置", scrolls=6):
+        return
     p.off(only=["朋友页显示推荐动态"], page="音乐·消息和隐私")
-    p.tap("第三方推送服务开关", exact=True)
+    if not open_entry("第三方推送服务开关", scrolls=6):
+        return
     p.off(page="音乐·第三方推送（活动、中奖信息）")
     p.back(3)
 
@@ -257,7 +320,8 @@ def _():
 @step("魔法画报")
 def _():
     # 锁屏杂志在荣耀叫「魔法画报」；轮播本来就关着
-    p.setting("杂志", "魔法画报")
+    if not p.setting("杂志", "魔法画报"):
+        raise RuntimeError("没搜到「魔法画报」")
     p.tap("魔法画报", exact=True, scrolls=0)        # 右栏的「魔法画报」入口
     if "magazine" not in p.focus():
         xy = [b for t, b, _ in p.texts() if t == "魔法画报"]

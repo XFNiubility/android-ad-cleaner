@@ -46,9 +46,9 @@ class OutcomeTableTests(unittest.TestCase):
         self.assertEqual({k for k in chan.KINDS if chan.toggled(outcome(k))},
                          {chan.DONE, chan.CONFIRMED_LATER})
 
-    def test_locked_and_denied_channels_are_exempt_from_the_recheck(self):
+    def test_channels_that_cannot_be_closed_are_exempt_from_the_recheck(self):
         self.assertEqual({k for k in chan.KINDS if chan.exempt_from_recheck(outcome(k))},
-                         {chan.GREYED, chan.APP_DENIED})
+                         {chan.GREYED, chan.APP_DENIED, chan.UI_HIDDEN})
 
 
 class RenderTests(unittest.TestCase):
@@ -142,7 +142,7 @@ class BatchTests(unittest.TestCase):
                                      [outcome(chan.UNCHANGED, "点击后渠道状态未改变")] * 2)
         self.assertEqual(code, 1)
         self.assertIn("拨了 0 个", out)              # 失败项不算「拨了」
-        self.assertIn("仍开着：营销通知", out)
+        self.assertIn("仍开着：营销通知（com.a）", out)
 
     def test_mismatch_is_not_retried(self):
         code, out, toggled = self.run_chan("off", [read(True), read(True)],

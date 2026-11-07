@@ -155,7 +155,7 @@ def baseline_tool_dir(sha):
     try:
         try:
             subprocess.run(["git", "worktree", "add", "--detach", str(tree), sha],
-                           cwd=root, check=True, capture_output=True, text=True)
+                           cwd=root, check=True, capture_output=True, text=True, encoding="utf-8", errors="replace")
         except subprocess.CalledProcessError as e:
             sys.exit(f"找不到提交 {sha}：先 git fetch origin {sha}\n{e.stderr.strip()}")
         added = True
@@ -169,14 +169,15 @@ def baseline_tool_dir(sha):
 
 def collect(tool_dir):
     proc = subprocess.run([sys.executable, str(Path(__file__).resolve()), "--dump", str(tool_dir)],
-                          capture_output=True, text=True, encoding="utf-8")
+                          capture_output=True, text=True, encoding="utf-8", errors="replace")
     if proc.returncode:
         sys.exit(f"跑不通 {tool_dir}：\n{proc.stderr}")
     return json.loads(proc.stdout)
 
 
 def off_guards(records):
-    """每个场景断言它自己那条分支：点到哪些标题、核对几项、带外行一次不点、重试真的补点。"""
+    """每个场景断言它自己那条分支：点到哪些开关、核对几项、带外行一次不点、重试真的补点、
+    补点两轮不动后回退到点行标题（ADR-0024，落点不是开关中心，按 None 认）。"""
     expected_clicks = {
         ("None", False): {"上边缘广告", "广告推荐", "下边缘广告", "限制广告跟踪"},
         ("None", True): {"限制广告跟踪"},
@@ -196,19 +197,21 @@ def off_guards(records):
         w, h = map(int, size_s.split("x"))
         _, coords = switch_page(w, h)
         by_xy = {xy: title for title, xy in coords.items()}
+        title_x = (int(w * 0.05) + int(w * 0.4)) // 2      # 标题文字的列中心：回退时点的是这里
         clicked = [by_xy.get(tuple(xy)) for xy in rec["clicked"]]
-        got = set(clicked)
+        got = {c for c in clicked if c is not None}
+        fallback = [tuple(xy) for xy in rec["clicked"] if tuple(xy) not in by_xy]
         key = (only_s.removeprefix("only="), safe_s == "safe=True")
         expected = expected_clicks[key]
         summary = f"核对 {expected_checked[key]} 项，调整 0 项"
         ok = (got == expected
               and rec["clicks"] > len(expected)          # 静态页回读不变，重试必须补点
               and "顶部广告" not in got and "底部广告" not in got
-              and None not in got
+              and fallback and all(xy[0] == title_x for xy in fallback)   # 回退点在标题那一列
               and any(summary in line for line in rec["lines"]))
         bad += 0 if ok else 1
-        print(f"守卫：{rec['id']} 点到 {sorted(x for x in got if x)}，共 {rec['clicks']} 次，"
-              f"{'ok' if ok else 'FAIL'}")
+        print(f"守卫：{rec['id']} 点到 {sorted(got)}、标题回退 {len(fallback)} 次，"
+              f"共 {rec['clicks']} 次，{'ok' if ok else 'FAIL'}")
     return bad
 
 

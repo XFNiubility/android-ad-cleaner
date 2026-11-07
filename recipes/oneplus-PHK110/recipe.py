@@ -6,6 +6,7 @@ BUILD = "PHK110_16.0.5.1201"
 import time
 
 ONLY = globals().get("ONLY") or []
+FAILED_STEPS = []
 RESULTS = []
 
 # 仅关闭明确的推广入口。没有列出的入口（包括未来新增项）不主动处理。
@@ -41,7 +42,8 @@ def step(name):
             completed = function()
             state = "completed" if completed else "incomplete"
         except Exception as error:
-            print(f"  ✗ 本段停止：{error}")
+            FAILED_STEPS.append(name)
+            print(f"  ✗ 未完成：{error}")
             state = "failed"
         RESULTS.append((name, state))
         print(f"  ({time.monotonic() - started:.0f} 秒，{state})", flush=True)
@@ -129,7 +131,8 @@ def off_exact(names, page, max_screens=16):
 @step("广告跟踪")
 def _():
     # 此版本的 OAIDActivity 不能由 shell 直接拉起，必须走系统设置中的搜索结果。
-    p.setting("设备标识与广告")
+    if not p.setting("设备标识与广告"):
+        raise RuntimeError("没搜到「设备标识与广告」")
     result = p.d(resourceId="android:id/title", text="设备标识与广告")
     if result.exists:
         result.click()

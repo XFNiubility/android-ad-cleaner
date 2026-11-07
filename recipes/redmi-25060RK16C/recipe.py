@@ -9,6 +9,7 @@ MODELS = ["25060RK16C"]
 import time
 
 ONLY = globals().get("ONLY") or []
+FAILED_STEPS = []
 
 
 def step(name):
@@ -21,7 +22,8 @@ def step(name):
             try:
                 f()
             except Exception as e:
-                print(f"  ✗ 出错：{e}")
+                FAILED_STEPS.append(name)
+                print(f"  ✗ 未完成：{e}")
             print(f"  ({time.time()-t:.0f} 秒)")
         return f
     return deco
@@ -97,20 +99,24 @@ def tab_bot(name):
 @step("系统广告")
 def _():
     # 实测：HyperOS 2 的「隐私与安全」页是权限中心，没有「更多安全设置」；改走引擎设置搜索（0.2.4 已修小米搜索框卡顿）
-    if p.setting("广告服务"):
-        # 「广告跟踪」以限制/防止开头 = 保护类，off() 会把它拨到开（AGENTS 硬规则10）
-        p.off(only=["个性化广告推荐", "广告跟踪"], page="系统·广告服务")
-        p.back()
+    if not p.setting("广告服务"):
+        # 搜索不可用时退回菜单路径（全程 maybe 守卫）；兜底也不通要记成未完成（#819）
+        p.d.shell("am start -f 0x10008000 -a android.settings.SETTINGS"); time.sleep(1.2)
+        reached = False
+        if maybe("隐私与安全") or maybe("隐私保护"):
+            if not maybe("更多安全设置"):
+                if maybe("安全", scrolls=3) or maybe("保护与隐私", scrolls=3):
+                    maybe("更多安全设置")
+            if maybe("广告服务"):
+                p.off(only=["个性化广告推荐", "广告跟踪"], page="系统·广告服务")
+                p.back()
+                reached = True
+        if not reached:
+            raise RuntimeError("没找到「广告服务」入口")
         return
-    # 搜索不可用时退回菜单路径（全程 maybe 守卫）
-    p.d.shell("am start -f 0x10008000 -a android.settings.SETTINGS"); time.sleep(1.2)
-    if maybe("隐私与安全") or maybe("隐私保护"):
-        if not maybe("更多安全设置"):
-            if maybe("安全", scrolls=3) or maybe("保护与隐私", scrolls=3):
-                maybe("更多安全设置")
-        if maybe("广告服务"):
-            p.off(only=["个性化广告推荐", "广告跟踪"], page="系统·广告服务")
-            p.back()
+    # 「广告跟踪」以限制/防止开头 = 保护类，off() 会把它拨到开（AGENTS 硬规则10）
+    p.off(only=["个性化广告推荐", "广告跟踪"], page="系统·广告服务")
+    p.back()
 
 
 @step("应用商店")

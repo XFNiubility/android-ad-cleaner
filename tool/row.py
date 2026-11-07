@@ -24,6 +24,17 @@ SKELETON_NODES = 80        # 一份骨架的节点上限：一屏朴素全量 18
 SKELETON_BYTES = 4096      # 单份字符上限，与节点上限双保险
 STATE_WORDS = ("开", "关", "已开启", "已关闭", "开启", "关闭", "ON", "OFF",
                "开启，开关", "关闭，开关", "已开启，开关", "已关闭，开关", "开启，按钮", "关闭，按钮")
+# vivo 把开关状态拼进标题尾部：「个性化推荐，开启」关掉后变「个性化推荐，关闭」，按原标题
+# 核对会扑空（#565）。与 STATE_WORDS 同一份词表派生的后缀（全角/半角逗号 + 状态词）：
+# 只剥「，状态词」结尾且剥出非空。标题产出处（title_of）统一调用，别处不再各自处理。
+STATE_SUFFIXES = tuple(f"，{word}" for word in STATE_WORDS) + tuple(f",{word}" for word in STATE_WORDS)
+
+
+def strip_state_suffix(title):
+    for suffix in STATE_SUFFIXES:
+        if title.endswith(suffix) and len(title) > len(suffix):
+            return title[:-len(suffix)].rstrip()
+    return title
 
 
 def bounds(node):
@@ -49,11 +60,14 @@ def icon_hit(node):
 
 
 def ident(node):
-    """同一个控件在 dump 里的身份：resource-id、文字（text / content-desc）与坐标。
-    华为 HarmonyOS 4 会把同一个控件吐出两次，这三项全同才算同一个（#510）。
-    只看坐标会把双列布局里左右对齐的两个控件并掉，所以三个都要算。"""
+    """同一个控件在 dump 里的身份：resource-id、文字（text / content-desc）、类名与坐标。
+    华为 HarmonyOS 4 会把同一个控件吐出两次，这四项全同才算同一个（#510）；
+    只看坐标会把双列布局里左右对齐的两个控件并掉，所以四项都要算。
+    类名不能省：自绘开关把无 id、无文字的容器与真开关叠在同一坐标上，
+    少了类名就会把 checkable 的那个并掉，整页开关读成 0 个（#531）。"""
     return (node.get("resource-id") or "",
             (node.get("text") or node.get("content-desc") or "").strip(),
+            node.get("class") or "",
             node.get("bounds") or "")
 
 
@@ -159,13 +173,14 @@ def same_row(a, b, title_a, title_b):
 
 def dedupe(items):
     """同一行只留最靠右的候选：整行可点与行内开关会各读到一个，整行那个的落点是卡片中心。
-    items 与返回都是 [(标题, checked, bounds)]；两列各自成行，都保留。"""
+    items 与返回都是 [(标题, checked, bounds, …)]；前三项之外的东西原样带着走（#608 的标题落点），
+    保留哪一条就留哪一条的。两列各自成行，都保留。"""
     rows = []
     for sw in sorted(items, key=lambda s: (s[2][1] + s[2][3]) // 2):
         if rows and same_line(rows[-1][2], sw[2]):
             if same_row(rows[-1][2], sw[2], rows[-1][0], sw[0]):
                 if (sw[2][0] + sw[2][2]) // 2 > (rows[-1][2][0] + rows[-1][2][2]) // 2:
-                    rows[-1] = sw if sw[0] else (rows[-1][0], sw[1], sw[2])
+                    rows[-1] = sw if sw[0] else (rows[-1][0],) + sw[1:]
             else:
                 rows.append(sw)
         else:
@@ -191,15 +206,20 @@ def own(node, parents, on_screen, max_depth=None):
     return container, boxes
 
 
-def title_of(switch, parents, on_screen, screen_h, max_depth=SWITCH_ROW_DEPTH):
-    """开关所在那一行的标题：往上找到第一个带文字的祖先。容器矮（就是一行）时分不清标题和说明，
+def title_label(switch, parents, on_screen, screen_h, max_depth=SWITCH_ROW_DEPTH):
+    """(标题, 标题文字的节点)：往上找到第一个带文字的祖先。容器矮（就是一行）时分不清标题和说明，
     取最上面那段；容器高（是一整张列表）时取竖直方向离开关最近的文字。
-    行里没有别的文字时，退回开关自己的无障碍标签。"""
+    行里没有别的文字时标题退回开关自己的无障碍标签，节点为 None——那样的行没有独立的标题可点。"""
     _, t, _, b = bounds(switch)
     cy = (t + b) // 2
     label = (switch.get("text") or switch.get("content-desc") or "").strip().split("\n", 1)[0]
     label = label if label not in STATE_WORDS else ""
-    title, node = "", switch
+
+    def gap(c):
+        # 候选是 (上, 左, 下, 文字, 节点)：竖直距离按上 / 下边界算，跟左边框没有关系
+        return 0 if c[0] <= cy <= c[2] else min(abs(c[0] - cy), abs(c[2] - cy))
+
+    title, node, chosen = "", switch, None
     for _ in range(max_depth):
         # 有自己的可访问标签时，不从包含多个开关的公共列表借用相邻行标题。
         # 这里数的是控件类名里的 Switch（含各家 HwSwitch），问的是「这是不是一张公共列表」；
@@ -216,21 +236,38 @@ def title_of(switch, parents, on_screen, screen_h, max_depth=SWITCH_ROW_DEPTH):
             xl, xt, xr, xb = bounds(x)
             if xb <= xt or not on_screen(x):
                 continue
-            cand.append((xt, xl, xb, tx))
+            cand.append((xt, xl, xb, tx, x))
         if cand:
             pl, pt, pr, pb = bounds(node)
             if pb - pt <= max(screen_h * 0.18, (b - t) * 3):
-                title = min(cand)[3]
+                best = min(cand, key=lambda c: c[:4])
             else:
-                near = sorted((0 if xt <= cy <= xb else min(abs(xt - cy), abs(xb - cy)), xt, tx)
-                              for xt, xl, xb, tx in cand)
-                if near[0][0] <= max(60, b - t):
-                    title = near[0][2]
+                best = min(cand, key=lambda c: (gap(c), c[0], c[3]))
+                if gap(best) > max(60, b - t):
+                    break
+            title, chosen = best[3], best[4]
             break
         node = parents.get(node)
         if node is None:
             break
-    return title or label
+    return title or label, chosen
+
+
+def title_of(switch, parents, on_screen, screen_h, max_depth=SWITCH_ROW_DEPTH):
+    """开关所在那一行的标题（规则见 `title_label`）。"""
+    # 状态尾缀在产出处剥掉（#565）：plan_switches / off / retry / wrong 拿到的标题
+    # 与状态无关，回读核对不再扑空。
+    return strip_state_suffix(title_label(switch, parents, on_screen, screen_h, max_depth)[0])
+
+
+def title_hit(switch, parents, on_screen, screen_h, max_depth=SWITCH_ROW_DEPTH):
+    """(标题, 标题文字的落点)：点它等于点整行标题。只认行标题的页面点开关本体不拨，
+    `off()` 在回读没变时改点这里（#608）。行里没有独立标题时落点为 None。"""
+    title, node = title_label(switch, parents, on_screen, screen_h, max_depth)
+    if node is None:
+        return strip_state_suffix(title), None
+    l, t, r, b = bounds(node)
+    return strip_state_suffix(title), ((l + r) // 2, (t + b) // 2)
 
 
 def path(node, parents, depth=PATH_DEPTH):

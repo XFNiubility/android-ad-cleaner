@@ -11,7 +11,7 @@
   fast.py -s SERIAL run 机型脚本.py         跑一个品牌机型脚本
 在脚本里：from fast import Phone
 """
-import os, re, sys, time, xml.etree.ElementTree as ET
+import os, re, shlex, sys, time, unicodedata, xml.etree.ElementTree as ET
 from dataclasses import dataclass
 for _st in (sys.stdout, sys.stderr):
     try:
@@ -21,23 +21,50 @@ for _st in (sys.stdout, sys.stderr):
 import adbutils
 import uiautomator2 as u2
 from ui_session import connect
-from troubleshooting import UI_RECOVERY, XIAOMI_INPUT, accessibility_summary, input_blocked
+from troubleshooting import (TAPPED, UI_INSTALL_FAILED, UI_RECOVERY, XIAOMI_INPUT,
+                             accessibility_summary, input_blocked)
 import adb_link
 import backups
 import events
 import wait
 from reader import Reader
 from row import (SWITCH_ROW_DEPTH, bounds, control, dedupe, disabled_at, is_switch, own,
-                 summary, switches_in, title_of, unique)
+                 summary, switches_in, title_hit, unique)
 # 显式 re-export：机型脚本从 fast 取这个判据（与 bounds 同一处引用）。
 from row import icon_hit as icon_hit
+# 极性词表定义在 polarity.py（文档生成器也要同一份，见 #693），这里显式 re-export，
+# `from fast import want_state` 的调用点一行都不用改。
+from polarity import AD_WORDS as AD_WORDS, NEG_PREFIX as NEG_PREFIX, TRACK_WORDS as TRACK_WORDS
+from polarity import want_state as want_state
 
 DISMISS = ("以后再说", "暂不更新", "暂不", "取消", "我知道了", "跳过", "禁止", "不再提示", "不同意")
 # 应用内更新弹窗的标题（主题商店 17.22.0beta2 是「检测到新版本」，#286）。它通常把更新说明放进可滚动容器，
 # 只按标题认，不按按钮认：单个「取消」在正常设置面板里也有。
 UPDATE_TITLE = re.compile(r"检测到新版本|发现新版本|版本更新提示")
-CONFIRM = ("确定", "关闭", "仍要关闭", "确认关闭", "确认", "继续关闭", "关闭推荐", "仍然关闭")
+CONFIRM = ("确定", "確定", "关闭", "關閉", "仍要关闭", "仍要關閉", "确认关闭", "確認關閉",
+           "确认", "確認", "继续关闭", "繼續關閉", "关闭推荐", "關閉推薦", "仍然关闭", "仍然關閉")
+# 点击后认确认框总共等多久：vivo 商店「个性化推荐」页的弹窗要 0.6 秒才进树，而一次读屏
+# 也要上百毫秒，1 秒是「能等到慢弹窗」与「没弹窗的页面不多付太多」之间的取值（#555）。
+# 前 0.2 秒先不给读屏：弹窗刚弹出时按钮还在动，点在半路上不生效。
+# 预算按挂钟算、读屏本身也吃时间：dump 慢到 0.5 秒的机型只采得到两次样，晚于 1 秒才进树的
+# 弹窗仍会漏，那时靠 `off()` 连点前的遮罩检查兜一次。
+CONFIRM_WAIT = 1.0
+CONFIRM_SETTLE = 0.2
 PERMISSION_CONTROLLERS = {"com.android.permissioncontroller", "com.google.android.permissioncontroller"}
+# 拉起后等目标 App 到前台：只有「确知不是它」的时间计入预算，空焦点是窗口还没画出来，不计（#581）。
+LAUNCH_WAIT = 5
+# 冷启动过渡能把启动等待顺延到的挂钟上限：与下面「启动后 8 秒仍读不到页面」同一个界，空焦点不能无限等。
+LAUNCH_HARD_STOP = 8
+# 连续读到别的 App 几次才算离开前台：主题商店 → 主题管理器这类跳包过渡帧只占一两帧（#581）。
+FOREIGN_STREAK = 3
+
+
+def unknown_focus(current):
+    """读不出前台（空串）= 窗口还没画出来，不是别的 App 抢了前台（#581）。
+    启动等待与权限弹窗两条分支共用这一条口径。"""
+    return not current
+
+
 # 输入框：荣耀 MagicOS 10（PNM-AN10 10.0.0.102）设置搜索框是 AutoCompleteTextView，类名里没有 EditText
 EDIT = re.compile(r"EditText|AutoCompleteTextView")
 
@@ -69,10 +96,6 @@ def switch_row(node, parents, depth=SWITCH_ROW_DEPTH):
     return any("RadioButton" not in (n.get("class") or "") for n in boxes)
 
 
-# 「防止/限制/阻止广告跟踪」「关闭个性化推荐」这类开关是反着的：打开才是保护。不能当广告开关关掉。
-NEG_PREFIX = re.compile(r"^(防止|限制|阻止|禁止|拒绝|不允许|屏蔽|关闭|停用|不接收|不显示|不推送|停止)")
-AD_WORDS = re.compile(r"广告|跟踪|追踪|推荐|个性化|营销|资讯|热搜|热点|定向|画像")   # 不含「推送」：「关闭推送」会连订单通知一起关
-TRACK_WORDS = re.compile(r"广告|跟踪|追踪")
 # 判据词后面只能是结尾或分隔符：底栏读作「我的，有新消息」算命中，「我的应用」不算
 EXPECT_TAIL = re.compile(r"[，,、/·\s（(：:]")
 
@@ -82,13 +105,6 @@ def expect_match(word, text):
     if text == word:
         return True
     return text.startswith(word) and bool(EXPECT_TAIL.match(text[len(word):]))
-
-
-def want_state(title):
-    """这个开关该处在什么状态：False=关（普通广告开关）；True=开（保护类开关）；None=不碰。"""
-    if NEG_PREFIX.search(title or ""):
-        return True if AD_WORDS.search(title) else None
-    return False
 
 
 @dataclass(frozen=True)
@@ -105,22 +121,38 @@ def in_band(xy, screen_h):
     return screen_h * 0.08 <= xy[1] <= screen_h * 0.985
 
 
+def match_key(text):
+    """keep/only 的归一化匹配键（#559）：NFKC 统一全角半角（「：」→「:」、「Ａ」→「A」、
+    全角空格→空格），去掉全部空白与常见中英标点，再小写。标题与保留词 / 名单词两侧
+    用同一套——只归一化一边等于没修。「应用安全」与「安全内容推荐」归一化后仍是两个键。
+    want_state() 的语义不动：它判「该开还是该关」，归一化只管「要不要碰」。"""
+    text = unicodedata.normalize("NFKC", text or "")
+    text = re.sub(r"[\s\u3000]+", "", text)
+    text = re.sub(r"[，。：；、！？·「」『』（）【】—－–,.:;!?()(\[\]){}\"'~*#@&%$+=|<>]", "", text)
+    return text.lower()
+
+
 def plan_switches(rows, keep=(), only=None, safe_mode=False, *, screen_h, disabled=None):
     """这一页该拨哪些开关。rows 是 `Phone.switches()` 的输出；函数不读屏、不点击。
 
     targets 只含需要点击的行；checked 是过了筛选的标题，含已在目标态、落在屏带外与被禁用的；
     kept 是安全模式放过的普通开关。disabled 是按坐标判「这一行的开关是灰的」的谓词：
-    命中的行不进 targets，也不报成拨不动。screen_h 无默认值：带过滤是这一页几何的一部分。"""
+    命中的行不进 targets，也不报成拨不动。screen_h 无默认值：带过滤是这一页几何的一部分。
+    keep/only 的匹配走 match_key 归一化（#559）：页面标题的字间空格、全角标点与脚本里
+    写的保留词不一致时（「首页 AI 搜索」vs「首页：AI搜索」），保留词照样命中。"""
+    keep_keys = {match_key(k) for k in keep if match_key(k)}
+    only_keys = {match_key(k) for k in only if match_key(k)} if only is not None else None
     checked, kept, candidates = set(), set(), []
-    for title, state, xy in rows:
+    for title, state, xy, *_ in rows:
         if not title:
             continue
+        key = match_key(title)
         want = want_state(title)
         if want is None:
             continue
-        if any(k in title for k in keep):
+        if any(k in key for k in keep_keys):
             continue
-        if only is not None and not any(k in title for k in only) and not (want and TRACK_WORDS.search(title)):
+        if only is not None and not any(k in key for k in only_keys) and not (want and TRACK_WORDS.search(title)):
             continue                              # 「限制广告跟踪」这类保护开关：不在名单里也要打开
         if safe_mode and only is None and not want:
             kept.add(title)
@@ -143,6 +175,81 @@ def greyed_titles(pairs, disabled):
     for title, xy in pairs:
         flags.setdefault(title, []).append(disabled(xy))
     return {title for title, found in flags.items() if all(found)}
+
+
+# 一屏回读后每条目标的结局。只有前两个算拨到了：VANISHED 是点过之后整行从列表消失（#486），
+# 灰态单列一档，因为它的说法与失败不同（「被上级开关禁用」而不是「关不掉」，#333）。
+REACHED = "reached"      # 到了目标态（关掉；保护类开关则是打开）
+VANISHED = "vanished"    # 点过之后整行从列表消失，按已关记账
+MISSED = "missed"        # 没到目标态
+GREYED = "greyed"        # 没到目标态，且开关是灰的
+
+
+def readback(targets, rows, *, clicked, others, page_same, disabled):
+    """一屏回读：{标题: 结局}。不读屏、不点击。
+
+    targets 是 `plan_switches()` 的输出；rows 是这一次读到的 (`Phone.switches()` 格式)；
+    clicked 是本屏真的点过的标题；others 是本屏计划时见过的非目标标题；disabled 是按落点判灰的谓词。
+    page_same 是零参数可调用对象，只在「点过、且行已从列表消失」时才被问，答这一页还是原来那页。
+    结局按标题合并：同名行的任意一行没到目标态就算没到（#403）。
+    """
+    states = {}
+    for title, on, *_ in rows:
+        states.setdefault(title, []).append(on)
+    out = {}
+    for t, _, w in targets:
+        seen = states.get(t)
+        if seen is not None:
+            out[t] = REACHED if all(on == w for on in seen) else MISSED
+        elif t in clicked and rows and not w:
+            # 点过的普通开关行从列表里消失了：回读里还有本屏计划时见过的非目标行，
+            # 且没跳走，才算随行消失。整页读空、换成标题全新的页（同 Activity 的子页）
+            # 时这一页已无法核对，不能把读屏失败当成关闭成功（#486）。
+            # 保护类开关是「主动打开」，行消失证明不了它开了，仍报打不开。
+            out[t] = VANISHED if page_same() and others & states.keys() else MISSED
+        else:
+            out[t] = MISSED
+    for t in still_greyed(targets, rows, {t for t, v in out.items() if v == MISSED}, disabled):
+        out[t] = GREYED
+    return out
+
+
+def still_greyed(targets, rows, titles, disabled):
+    """rows 里这些标题中、还没到目标态、且同名行全被判灰的那几个（#333）。
+    回读与补点共用这一份判据：每次都要按当次读到的落点重新算，不能沿用上一次的。"""
+    want = {t: w for t, _, w in targets}
+    return titles & greyed_titles(
+        ((title, xy) for title, on, xy, *_ in rows
+         if title in titles and on != want[title]), disabled)
+
+
+def still_open(verdicts):
+    """回读里还没到目标态的标题（灰的也算在里面）：补点只看这一批。"""
+    return {t for t, v in verdicts.items() if v in (MISSED, GREYED)}
+
+
+def pick_retry_rows(targets, rows, still, disabled):
+    """该补点的那一行：一标题一行、跳过灰的、按状态而不是按标题挑（#403）。
+    rows 是新读的一屏，不能沿用消失节点的旧坐标；顺序跟着拨动计划。"""
+    want = {t: w for t, _, w in targets}
+    grey = still_greyed(targets, rows, still, disabled)
+    picked = []
+    for t, w in want.items():
+        if t not in still or t in grey:
+            continue
+        row = next(((on, at) for title, on, at, *_ in rows
+                    if title == t and on != w and not disabled(at)), None)
+        if row is not None:
+            picked.append((t, row[1]))
+    return picked
+
+
+def pick_title_rows(targets, rows, still, disabled):
+    """回退到行标题时该点哪些行：挑哪几行交给 `pick_retry_rows`，落点换成同一行的标题（#608）。
+    rows 是 `Phone.switch_rows()` 的四元组；没有独立标题的行不点——点它的标题等于再点一次本体。"""
+    hits = {(title, xy): hit for title, _, xy, hit in rows if hit is not None}
+    return [(t, hits[(t, xy)])
+            for t, xy in pick_retry_rows(targets, rows, still, disabled) if (t, xy) in hits]
 
 
 def _shell_transport(shell):
@@ -172,6 +279,8 @@ class Phone:
                                f"{accessibility_summary(serial)}\n{UI_RECOVERY}\n"
                                f"原始异常：{type(e).__name__}: {e}") from e
         except u2.exceptions.UiAutomationError as e:
+            if "后台屏" in str(e):      # 屏已经没了不是读屏服务坏了：别把用户指去关别的客户端（#674）
+                raise RuntimeError(f"后台执行用的那块屏已经关了，本次未点击开关。请重试一次。\n原始异常：{type(e).__name__}: {e}") from e
             raise RuntimeError("手机读屏服务（UiAutomation）启动失败，本次未点击开关。"
                                f"\n{accessibility_summary(serial)}\n{UI_RECOVERY}\n"
                                f"原始异常：{type(e).__name__}: {e}") from e
@@ -179,9 +288,7 @@ class Phone:
             # 读屏服务文件传不进手机（adb push 返回 FAIL）或命令无回应：多半是连接中途断了（错误日志 10-27）。
             if not adb_link.present(serial):
                 raise adb_link.lost(f"{type(e).__name__}: {e}") from e
-            raise RuntimeError("读屏服务没能装到手机上（adb 传文件失败），本次未点击开关。请拔插数据线、"
-                               "退出电脑上的手机助手类软件后重试；仍失败请重启手机。"
-                               f"\n原始异常：{type(e).__name__}: {str(e)[:200]}") from e
+            raise RuntimeError(UI_INSTALL_FAILED + f"\n原始异常：{type(e).__name__}: {str(e)[:200]}") from e
         self._shell = self.reader.shell
         self.link = adb_link.Connection(serial, transport=_shell_transport(self._shell), lost_on_retry=False)
         self.reader.shell = self._resilient_shell
@@ -190,7 +297,7 @@ class Phone:
             self.W, self.H = self.reader.window_size()
             # 小米没开「USB 调试（安全设置）」时能读不能点：先探一下，别跑几分钟全是「没找到」。
             if input_blocked(self.reader.shell("input keyevent 0").output):
-                raise RuntimeError("INPUT_BLOCKED：系统拒绝了电脑发出的点击，本次未点击开关。\n" + XIAOMI_INPUT)
+                raise RuntimeError(f"INPUT_BLOCKED：系统拒绝了{TAPPED}，本次未点击开关。\n" + XIAOMI_INPUT)
         except BaseException:
             self.reader.close()
             raise
@@ -200,9 +307,11 @@ class Phone:
         self.systemui_text = False          # 读屏时是否算上 com.android.systemui 的文字（vivo OriginOS Ocean 的通知页就挂在那里）
         self.vivo_seen = False              # 见过 vivo 的通知页：渠道页与应用通知页是同一个 Activity，只从应用列表进
         self.changed = []          # (页面, 标题) 记录本次关掉的
+        self.missed = []           # (页面, 标题) 记录本次没拨到目标态的；与 changed 同源、同生命周期（#788）
         self.miss = 0              # 本段已经没找到几次；>0 说明路径对不上，后面只看当前屏、不再翻页找
         self.skeleton_sigs = set()  # 本次运行已上报的骨架布局（#428）：同布局只留第一份
         self.skeleton_count = 0     # 本次运行已上报的骨架份数，上限见 chan_fast.SKELETON_PER_RUN
+        self.mismatch_probes = 0    # 本次运行已补的 MISMATCH 判据读数，上限见 chan_fast.MISMATCH_PER_RUN
         self.promoted = set()      # 点过才发现是推广位的 ✕：(App, 控件) 同一处不再点第二次（#420）
         self.app = ""              # 最近一次 start 拉起的目标 App：推广位只在这个 App 里判
 
@@ -267,7 +376,8 @@ class Phone:
         if self.log:
             print(*a, flush=True)
 
-    # ---------- 读屏 ----------
+    # ---------- 采样：读屏、页面状态与签名 ----------
+    # 区内的 scroll_more、locked、wait_unlocked 会动屏幕（翻页、拉通知栏、亮屏等人解锁），不是纯读。
     def tree(self):
         root = ET.fromstring(self._u2(self.reader.dump_hierarchy))
         # Mi 10 的热榜子页会横屏；不能一直用连接时的竖屏尺寸过滤节点。
@@ -275,7 +385,9 @@ class Phone:
         return root
 
     def focus(self):
-        """当前焦点窗口（~0.1 秒；u2 的 app_current 在浮窗上会卡 10 秒）。"""
+        """当前前台窗口：多数是 `包名/页面名`，锁屏 / 通知栏 / 输入法抢焦点时是裸窗口名，读不到返回空串
+        （~0.1 秒；u2 的 app_current 在浮窗上会卡 10 秒）。判「还在不在这个 App」用 `split("/", 1)[0]`。
+        不是聚焦控件，也不是焦点元素：判断有没有聚焦的输入框用 `edit_ready()`，读框里的文字用 `focused_text()`。"""
         self.check_alive()
         # 不能加 grep -m / head：提前退出会让 dumpsys 收到 SIGPIPE，u2 判「shell output invalid」（#205）。
         # sed 读完整个流再截断，行数与原来一致。
@@ -317,7 +429,13 @@ class Phone:
         return r > l and b > t and 0 <= cx < self.W and 0 <= cy < self.H
 
     def switches(self, root=None):
-        """[(标题, checked, (cx,cy))]，标题取开关所在行的第一段文字。"""
+        """[(标题, checked, (cx,cy))]，标题取开关所在行的第一段文字。落点是开关本体。"""
+        return [(title, on, xy) for title, on, xy, hit in self.switch_rows(root)]
+
+    def switch_rows(self, root=None):
+        """[(标题, checked, 开关本体落点, 行标题落点)]：与 switches() 同一次遍历，多带标题落点。
+        落点为 None 表示这一行没有独立标题（标题取自开关自己的标签）；`off()` 在开关本体
+        点了不动时改点标题（#608）。"""
         root = root if root is not None else self.tree()
         parent = {c: p for p in root.iter() for c in p}
         out = []
@@ -356,8 +474,10 @@ class Phone:
             l, t, r, b = bounds(ctrl)
             # 卡片自己报状态时以卡片为准；缺这个属性才读内层开关，别把缺属性当成「关」
             checked = n.get("checked") if n.get("checked") is not None else ctrl.get("checked")
-            out.append((title_of(n, parent, self.on_screen, self.H), checked == "true", (l, t, r, b)))
-        return [(title, on, ((l + r) // 2, (t + b) // 2)) for title, on, (l, t, r, b) in dedupe(out)]
+            title, hit = title_hit(n, parent, self.on_screen, self.H)
+            out.append((title, checked == "true", (l, t, r, b), hit))
+        return [(title, on, ((l + r) // 2, (t + b) // 2), hit)
+                for title, on, (l, t, r, b), hit in dedupe(out)]
 
     def locked(self):
         if self.pause_at_lock_check and pause_point():
@@ -370,21 +490,10 @@ class Phone:
             out = self.reader.shell(adb_link.KEYGUARD_CMD).output
         return adb_link.keyguard_showing(out)
 
-    def wait_unlocked(self, timeout=90):
-        """锁屏时点亮屏幕，等机主解锁（不代替解锁）。等到了返回 True。
-        错误日志 10-27：约 15 份报告在开始执行时手机已锁屏，以前直接报失败，后面每一项都重复「锁屏了」。"""
-        self.reader.shell("input keyevent KEYCODE_WAKEUP")
-        if not self.locked():
-            return True
-        print(f"  ! 手机锁屏了：请解锁手机并保持亮屏，解锁后自动继续（最多等 {timeout} 秒）", flush=True)
-        events.emit("locked")
-        t = time.time()
-        while time.time() - t < timeout:
-            time.sleep(1)
-            if not self.locked():
-                time.sleep(0.8)
-                return True
-        return False
+    def wait_unlocked(self, timeout=wait.UNLOCK_TIMEOUT):
+        """锁屏时点亮屏幕，等机主解锁。文案、节奏与事件在 wait.wait_unlocked（#709）。"""
+        return wait.wait_unlocked(self.locked, lambda: self.reader.shell(adb_link.WAKEUP),
+                                  timeout, now=time.time, sleep=time.sleep)
 
     def sig(self):
         return "|".join(t for t, _, _ in self.texts())
@@ -421,7 +530,7 @@ class Phone:
         for t, c, xy in self.switches(root):
             print(f"  [{'开' if c else '关'}] {t}  @{xy}")
 
-    # ---------- 动作 ----------
+    # ---------- 认行与导航：点击、翻页、按文字找入口 ----------
     def click(self, x, y):
         size = self._u2(self.reader.window_size)
         if tuple(size) != (self.W, self.H):
@@ -431,7 +540,7 @@ class Phone:
             raise RuntimeError("点击坐标在屏幕外，未操作")
         out = self.reader.shell(f"input swipe {x} {y} {x} {y} 80").output   # 有的 App 吞 input tap
         if input_blocked(out):
-            raise RuntimeError("系统拒绝了电脑发出的点击。" + XIAOMI_INPUT)
+            raise RuntimeError(f"系统拒绝了{TAPPED}。" + XIAOMI_INPUT)
 
     def scroll(self, frac=0.45, up=False):
         """按下-移动-停 0.12 秒-松开：没有惯性，翻多少是多少，约 0.45 秒。"""
@@ -483,6 +592,9 @@ class Phone:
         return None
 
     CLOSE = re.compile(r"close|关闭|跳过|skip|cancel|dismiss|iv_x\b|btn_x\b", re.I)
+    # 描述精确读作「返回」的不是弹窗的 ✕，是浮层/页面自己的返回键：点了是导航，会把刚打开的
+    # 浮层收起来。vivo 浏览器菜单的 iv_back_cancel 就长这样，id 里的 cancel 本来会命中 CLOSE（#753）。
+    BACK_LABELS = {"返回", "back"}
 
     def dismiss(self):
         """挡路的更新/推荐/权限弹窗：点拒绝类按钮（不替用户同意任何东西）。
@@ -518,8 +630,10 @@ class Phone:
         for n in root.iter("node"):
             if n.get("clickable") != "true" or n.get("package") == "com.android.systemui":
                 continue
-            key = (n.get("content-desc") or "") + " " + (n.get("resource-id") or "")
-            if (self.CLOSE.search(key) and not (n.get("text") or "").strip()
+            desc = (n.get("content-desc") or "").strip()
+            key = desc + " " + (n.get("resource-id") or "")
+            if (self.CLOSE.search(key) and desc.casefold() not in self.BACK_LABELS
+                    and not (n.get("text") or "").strip()
                     and not in_list(n) and not is_switch_row(n)):
                 l, t, r, b = bounds(n)
                 # 只点屏幕内的图标：屏幕外还留着上一层的节点，点它会抛「点击坐标在屏幕外」把整段打断
@@ -593,7 +707,7 @@ class Phone:
                     return True
                 self.dismiss() or time.sleep(0.2)
             if not quiet:
-                self.say(f"  ✗ 没找到「{text}」")
+                self.say(f"  ✗ 没找到「{text}」" + self.residual_note())
             return False
         if self.miss:                                   # 本段已经走丢：只看当前这一屏
             xy = self.find(text, exact, nav=True)
@@ -605,7 +719,7 @@ class Phone:
                 return True
             self.miss += 1
             if not quiet:
-                self.say(f"  ✗ 没找到「{text}」（快速放弃）")
+                self.say(f"  ✗ 没找到「{text}」（快速放弃）" + self.residual_note())
             return False
         for rnd in range(2 if scrolls else 1):
             for i in range(scrolls + 1):
@@ -631,7 +745,7 @@ class Phone:
                 self.top(scrolls + 2)
         self.miss += 1
         if not quiet:
-            self.say(f"  ✗ 没找到「{text}」")
+            self.say(f"  ✗ 没找到「{text}」" + self.residual_note())
         return False
 
     def in_settings_page(self):
@@ -733,15 +847,16 @@ class Phone:
         for _ in range(tries):
             seen = []
             if not self.tap(text, exact=exact, scrolls=scrolls, seen=seen):
-                raise RuntimeError(f"未找到入口「{text}」；当前页：{self.page_text()}")
+                raise RuntimeError(f"未找到入口「{text}」{self.residual_note('；')}；当前页：{self.page_text()}")
             if self.settle(seen[0], 2.0):
                 return
-        raise RuntimeError(f"点「{text}」后页面没有变化；当前页：{self.page_text()}")
+        raise RuntimeError(f"点「{text}」后页面没有变化{self.residual_note('；')}；当前页：{self.page_text()}")
 
     def go(self, text, expect, tries=3, exact=True):
         """点 text，直到 expect 出现在屏幕上（被弹窗吞掉就再点）。
         精确匹配找不到时退回包含匹配：底部标签常读作「我的，有新消息」，精确匹配「我的」返回空（#305）。
-        放宽的只是点哪个节点，落点仍由 expect 确认，点错了照样返回 False。"""
+        已知边界：落点只核对 expect 此刻在不在屏上，不与点击前的页面比较——expect 本来就在屏上时，
+        点击被吞或入口没找到也返回 True。底栏标签改用 tab()，它按屏底带定位。"""
         if exact and not self.find(text, exact=True, edge_ok="tab", nav=True):
             exact = False
         for _ in range(tries):
@@ -750,7 +865,7 @@ class Phone:
                 if self.find(expect) or self.find(expect, edge_ok="tab"):
                     return True
                 self.dismiss() or time.sleep(0.3)
-        self.say(f"  ✗ 点「{text}」后没出现「{expect}」")
+        self.say(f"  ✗ 点「{text}」后没出现「{expect}」" + self.residual_note())
         return False
 
     def tab(self, name, maxwait=6.0):
@@ -795,17 +910,52 @@ class Phone:
             self.reader.shell("input keyevent BACK")
             self.settle(b, 0.6)
 
+    # ---------- 拨动：确认框与整页开关 ----------
     def confirm(self):
-        """开关后弹确认框就点确认类按钮。严格档只认 Button 类，
-        ColorOS 开关旁边的「开启/关闭」状态文字不算——点了会把开关又拨回去。
+        """开关后弹确认框就点确认类按钮，认出即返回按钮文字；没有弹窗返回 None。
+
+        弹窗进树可能远慢于一次读屏（vivo 商店这一页要 0.6 秒），单次快照从点击那一刻起就
+        必然错过，剩下的点击会落在遮罩上被吞（#555）。所以在 CONFIRM_WAIT 预算内轮询。"""
+        time.sleep(CONFIRM_SETTLE)
+        found = wait.until(self._confirm_target, timeout=CONFIRM_WAIT - CONFIRM_SETTLE,
+                           poll=0.1, now=time.time, sleep=time.sleep)
+        if found is None:
+            return None
+        label, xy = found
+        self.click(*xy)
+        time.sleep(0.3)
+        return label
+
+    def residual_confirm(self, root=None):
+        """屏上还挂着没被点掉的确认框时返回确认按钮的文字，没有返回 None。
+
+        查找失败时用它补一句原因：整页读不到行常常是遮罩挡着，而不是这一版没适配（#557）。
+        只读不点，弹窗留着不动。读页读不到也按「没有确认框」算：这是失败路径上的诊断，
+        它抛错会把脚本里大量 `if p.tap(...)` 的可选探测一起打断；只有断线照常冒泡。"""
+        try:
+            found = self._confirm_target(root)
+        except adb_link.DeviceLost:
+            raise
+        except Exception:
+            return None
+        return found[0] if found else None
+
+    def residual_note(self, sep="——", root=None):
+        """查找失败时挂在说明后面的那句「屏上还挂着没点掉的确认框「X」」；没有确认框时是空串。"""
+        label = self.residual_confirm(root)
+        return f"{sep}屏上还挂着没点掉的确认框「{label}」" if label else ""
+
+    def _confirm_target(self, root=None):
+        """屏上第一个确认类按钮的 (文字, 落点)；没有返回 None。只看不点，等弹窗与防遮罩共用它。
+
+        严格档只认 Button 类，ColorOS 开关旁边的「开启/关闭」状态文字不算——点了会把开关又拨回去。
         按钮文字不一定在 text 上：vivo 阅图锁屏的 Button text 为空、文字在 content-desc（#246 / PR #249）；
         vivo / iQOO 另一种弹窗把文字放在 Button 下级的 TextView（vbutton_title，PR #239）。
         都要整段等于确认词，避免点到说明文字。
         屏幕外的节点跳过：页面里常留着上一层对话框的按钮，点它会抛「点击坐标在屏幕外」把整段打断（PR #248）。
         严格档全没命中再退一档：HyperOS 4 的部分弹窗把确认键画成可点击的 TextView（小米 17 热榜页，PR #408 / #500）。
         兜底档靠 TextView 类过滤挡掉 ColorOS 的 View 状态文字，尺寸只用来排除整行。"""
-        time.sleep(0.2)
-        root = self.tree()
+        root = root if root is not None else self.tree()
 
         def button_hit(n, c):
             if "Button" not in (n.get("class") or ""):
@@ -829,9 +979,7 @@ class Phone:
                         continue
                     l, t, r, b = bounds(n)
                     if r > l and b > t and self.on_screen(n):
-                        self.click((l + r) // 2, (t + b) // 2)
-                        time.sleep(0.3)
-                        return c
+                        return c, ((l + r) // 2, (t + b) // 2)
         return None
 
     def off(self, keep=(), only=None, page="", max_screens=40):
@@ -841,7 +989,9 @@ class Phone:
         首击后剩下的目标若已不在原坐标，这一屏剩下的改成每点一项前重读坐标（#480）。
         点过的普通开关行在回读里消失、回读仍见到本屏计划时的非目标行且没跳走，按已关记账；
         整页读空、换到别的页（含同 Activity 的子页）或保护类开关消失，仍报失败（#486）。
-        开关是灰的（被上级开关禁用）的行不点、也不算失败：点了也不会变，以前报成「关不掉」（#333）。"""
+        开关是灰的（被上级开关禁用）的行不点、也不算失败：点了也不会变，以前报成「关不掉」（#333）。
+        补点两轮仍没到位的，回退到点整行标题（只认行标题的页面，ADR-0024）：照样由回读确认。
+        仍没拨到目标态的记进 `self.missed`：光打一行 ✗ 的话退出码还是 0、结果页标「成功」（#788）。"""
         # 页面刚打开还没画完：等开关出现，最多试 10 次（本段已走丢就不等）
         wait.until(self.switches, tries=2 if self.miss else 10, poll=0.2,
                    now=time.time, sleep=time.sleep)
@@ -861,6 +1011,9 @@ class Phone:
                 root = self.tree()
                 plan, planned = plan_page(root)
             checked |= plan.checked
+            for t in plan.checked:                      # 已经到位的：上一屏或上一次 off() 记的那条不再算没拨动
+                if (page, t) in self.missed:
+                    self.missed.remove((page, t))
             kept |= plan.kept
             page_greyed = set(plan.disabled)
             targets = plan.targets
@@ -869,12 +1022,15 @@ class Phone:
             shift = False                               # 剩下的目标是不是还准在计划坐标上
             clicked = set()                             # 本屏真的点过的标题：点完从列表消失的靠它认
             for i, (t, xy, w) in enumerate(order):
+                if i and not slow and self._confirm_target() is not None:
+                    # 首击的确认框比 confirm() 的等待还慢时，页面还盖着遮罩：连点下去全被吞（#555）
+                    self.confirm()
                 if i and shift:
                     # 页面重排过：每点一项前重读，旧坐标可能已经指向邻行
                     time.sleep(0.3)                     # 等行消失、列表上移的动画走完
                     root = self.tree()
                     rows = self.switches(root)
-                    row = next(((on, at) for title, on, at in rows
+                    row = next(((on, at) for title, on, at, *_ in rows
                                 if title == t and on != w), None)
                     if row is None or not in_band(row[1], self.H) or disabled_at(root, row[1]):
                         continue                        # 已不在、已到位、已在带外或已变灰：交给收尾回读
@@ -898,36 +1054,18 @@ class Phone:
                 time.sleep(0.25)
                 self.confirm()
 
-                def wrong():                            # 还没到目标状态的标题，以及其中灰掉的
+                def read_page():                        # 这一屏的回读：({标题: 结局}, 这次读到的树)
                     root = self.tree()
                     rows = self.switches(root)
-                    states, want = {}, {t: w for t, _, w in targets}
-                    for title, on, _ in rows:
-                        states.setdefault(title, []).append(on)
-                    page_same = None                    # 惰性查：没有消失行时不额外读一次前台
-                    still, vanished = set(), set()
-                    for t, _, w in targets:
-                        seen = states.get(t)
-                        if seen is not None:
-                            if any(on != w for on in seen):   # 同名双列：还有一行没到目标态（#403）
-                                still.add(t)
-                        elif t in clicked and rows and not w:
-                            # 点过的普通开关行从列表里消失了：回读里还有本屏计划时见过的非目标行，
-                            # 且没跳走，才算随行消失。整页读空、换成标题全新的页（同 Activity 的子页）
-                            # 时这一页已无法核对，不能把读屏失败当成关闭成功（#486）。
-                            # 保护类开关是「主动打开」，行消失证明不了它开了，仍报打不开。
-                            if page_same is None:
-                                page_same = self.focus() == start
-                            if page_same and others & states.keys():
-                                vanished.add(t)
-                            else:
-                                still.add(t)
-                        else:
-                            still.add(t)
-                    return still, still & greyed_titles(
-                        ((title, xy) for title, on, xy in rows
-                         if title in still and on != want[title]),
-                        lambda xy: disabled_at(root, xy)), vanished
+                    stayed = []                         # 惰性查：没有消失行时不额外读一次前台
+
+                    def page_same():
+                        if not stayed:
+                            stayed.append(self.focus() == start)
+                        return stayed[0]
+                    return readback(targets, rows, clicked=clicked, others=others,
+                                    page_same=page_same,
+                                    disabled=lambda xy: disabled_at(root, xy)), root
 
                 def retry(still):
                     # 只重试当前仍能识别的开关，不能在节点消失后沿用旧坐标；灰掉的点了也不会变。
@@ -939,40 +1077,65 @@ class Phone:
                                                         # here 为空只是这一次没读到前台，不拦补点
                     root = self.tree()
                     rows = self.switches(root)
-                    want = {t: w for t, _, w in targets}
-                    grey = still & greyed_titles(
-                        ((title, xy) for title, on, xy in rows
-                         if title in still and on != want[title]),
-                        lambda xy: disabled_at(root, xy))
-                    retried = set()                     # 一次补点里同名标题只点一下
-                    for t, _, w in targets:
-                        if t not in still or t in grey or t in retried:
-                            continue
-                        # 同名双列挑还开着、且不是灰的行：按标题取最后读到的那行会让补点取决于读屏顺序（#403）
-                        row = next(((on, at) for title, on, at in rows
-                                    if title == t and on != w and not disabled_at(root, at)), None)
-                        if row is not None:
-                            retried.add(t)
-                            self.click(*row[1]); self.confirm()
-                            clicked.add(t)              # 补点也算点过：行随后消失同样是随行消失（#486）
-                still, grey, vanished = wrong()
+                    for t, xy in pick_retry_rows(targets, rows, still,
+                                                 lambda xy: disabled_at(root, xy)):
+                        self.click(*xy); self.confirm()
+                        clicked.add(t)                  # 补点也算点过：行随后消失同样是随行消失（#486）
+
+                def retry_titles(still, root):
+                    # 开关本体点了不动、只认行标题的页面（Google 广告设置页，#608）：改点这一行的标题。
+                    # 每点一次都按新树重取坐标：点掉一行会让下面的行整体上移，旧坐标会落到邻行（#480 同一口子）。
+                    done_here, pending = False, set(still)
+                    while pending:
+                        picked = pick_title_rows(targets, self.switch_rows(root), pending,
+                                                 lambda xy: disabled_at(root, xy))
+                        if not picked:
+                            break                       # 没有独立标题可点：不多读前台、也不多回读
+                        here = self.focus()
+                        if here and here != start:
+                            break                       # 页面已经换了：新页上的同名行不是这一屏的开关
+                        t, xy = picked[0]
+                        self.click(*xy); self.confirm()
+                        clicked.add(t)
+                        done_here, pending = True, pending - {t}
+                        here = self.focus()
+                        if here and here != start:      # 标题不是开关：有的页面点它进的是详情页
+                            self.back()
+                            break
+                        if pending:
+                            time.sleep(0.3)             # 等行消失 / 列表上移的动画走完
+                            root = self.tree()
+                    return done_here
+                verdicts, root = read_page()
+                still = still_open(verdicts)
                 retry(still)
-                still, grey, vanished = wrong()
+                verdicts, root = read_page()
+                still = still_open(verdicts)
                 if still:                               # 还有没拨过去的：等动画结束再点一次
                     time.sleep(0.8)
                     retry(still)
                     time.sleep(0.4)
-                    still, grey, vanished = wrong()
-                page_greyed |= grey                     # 这一屏关到一半才变灰的，同样不报成拨不动
+                    verdicts, root = read_page()
+                    still = still_open(verdicts)
+                if still and retry_titles(still, root):
+                    time.sleep(0.4)                     # 点标题后可能弹确认框 / 改状态：复读确认
+                    verdicts, _ = read_page()
+                # 这一屏关到一半才变灰的，同样不报成拨不动
+                page_greyed |= {t for t, v in verdicts.items() if v == GREYED}
                 for t, _, w in targets:
-                    if t in still and t in grey:
+                    v = verdicts[t]
+                    if v == GREYED:
                         continue                        # 下面单独说明
-                    if t in still:
+                    if v == MISSED:
                         self.say(f"  ✗ {'打不开' if w else '关不掉'} {t}")
+                        if (page, t) not in self.missed:      # 滚动后同一行会再成为目标
+                            self.missed.append((page, t))
                     else:
                         self.say(f"  {'开（保护类开关）' if w else '关'} {t}"
-                                 + ("（点后从列表消失）" if t in vanished else ""))
+                                 + ("（点后从列表消失）" if v == VANISHED else ""))
                         self.changed.append((page, t))
+                        if (page, t) in self.missed:          # 下一屏补点拨到了
+                            self.missed.remove((page, t))
                         done += 1
             for t in page_greyed - greyed:
                 self.say(f"  · 被上级开关禁用（开关是灰的），未改动 {t}")
@@ -987,6 +1150,7 @@ class Phone:
                 self.say(f"  · {page}：核对 {len(checked)} 项，调整 {done} 项" + ("（本页未找到目标开关）" if not checked else ""))
         return done
 
+    # ---------- 设置搜索：输入框、打字、按关键词进页 ----------
     def focused_text(self):
         for n in self.tree().iter("node"):
             if n.get("focused") == "true" and EDIT.search(n.get("class") or "") and self.on_screen(n):
@@ -995,7 +1159,8 @@ class Phone:
 
     def type_text(self, kw, timeout=4.0):
         """往当前输入框打字。部分机型（小米 HyperOS 设置搜索）用 setText 会卡住、一直打「%」：
-        加超时，打完核对；不对就清掉、改用剪贴板粘贴；还不对就关掉键盘返回 False，不卡住。"""
+        加超时，打完核对；不对就清掉、改用剪贴板粘贴；还不对就返回 False，不卡住。
+        失败时不退场：离开搜索页只由调用方的 `_leave_search()` 做（#639）。"""
         if not self.edit_ready():
             return False
 
@@ -1031,7 +1196,6 @@ class Phone:
         if attempt(paste):
             return True
         clear()
-        self.reader.shell("input keyevent BACK")
         return False
 
     BOX = re.compile(r"^搜索.{0,6}设置|^Search settings", re.I)
@@ -1043,12 +1207,40 @@ class Phone:
                 return True
         return False
 
-    def setting(self, kw, entry=None, box=None):
+    # 直接打开系统设置搜索页的动作（#650）：打得开就省掉「设置首页 → 找框 → 点框 → 等输入框」。
+    # 没有这个动作的系统 am start 当场报解析不到（退出码非零），回到老路，不额外等。
+    SEARCH_ACTION = "oplus.intent.action.settings.MAIN_SEARCH"        # ColorOS（OPPO / 一加 / 真我）
+
+    def _search_page(self):
+        res = self.reader.shell(f"am start -f 0x10008000 -a {self.SEARCH_ACTION}")
+        out = str(getattr(res, "output", "") or "")
+        if getattr(res, "exit_code", 0) or "Error" in out or "unable to resolve" in out.lower():
+            return False
+        return bool(wait.until(self.edit_ready, timeout=2.5, poll=0.15, now=time.time, sleep=time.sleep))
+
+    def _leave_search(self):
+        """离开设置搜索页并回到设置首页（#639）：按 BACK 收起键盘、退出搜索页，
+        再拉起设置首页——直达搜索页时它是新任务根，BACK 会落到桌面而不是设置首页。
+        搜索失败的各条路径共用这一处退场。"""
+        if not self.edit_ready():
+            return True
+        for _ in range(3):
+            self.back()
+            if not self.edit_ready():
+                break
+        else:
+            return False
+        self.reader.shell("am start -f 0x10008000 -a android.settings.SETTINGS")
+        time.sleep(0.5)
+        return True
+
+    def setting(self, kw, entry=None, box=None, path=None):
         """系统设置里搜 kw，点结果 entry（默认就是 kw）。
         box：搜索框文字，不给就自动认（小米「搜索系统设置项」、OPPO「搜索设置项」等）。
+        path：结果下一行的位置文字（如「隐私与安全 > 隐私 > 设备标识与广告」）。同名结果有好几条时按它挑。
+        先试直达搜索页的动作（ColorOS），没有就回设置首页点搜索框。
         设置首页刚打开时点搜索框会被忽略（小米 18 Pro Max 实测）：点完要看到输入框才往下走，没打开就再点。"""
         self.miss = 0
-        self.reader.shell("am start -f 0x10008000 -a android.settings.SETTINGS")
 
         def box_at():
             for t, (l, tp, r, b), _ in self.texts():
@@ -1058,32 +1250,42 @@ class Phone:
 
         def result_at():
             # 输入框里也有同一段文字；只认非输入框的结果，不能点回搜索框后假报成功。
-            for t, (l, tp, r, b), n in self.texts():
-                if t == (entry or kw) and not EDIT.search(n.get("class", "")):
-                    return ((l + r) // 2, (tp + b) // 2)
+            items = self.texts()
+            for i, (t, (l, tp, r, b), n) in enumerate(items):
+                if t != (entry or kw) or EDIT.search(n.get("class", "")):
+                    continue
+                if path and not (i + 1 < len(items) and items[i + 1][0] == path):
+                    continue
+                return ((l + r) // 2, (tp + b) // 2)
             return None
 
-        opened = False
-        for _ in range(4):
-            xy = wait.until(box_at, timeout=3, poll=0.15, now=time.time, sleep=time.sleep)
-            if not xy:
-                break
-            time.sleep(0.4)                      # 首页还在加载时点击会被吞
-            self.click(*xy)
-            opened = bool(wait.until(self.edit_ready, timeout=2, poll=0.15,
-                                     now=time.time, sleep=time.sleep))
-            if opened:
-                break
+        def give_up(msg):
+            # 失败前把页面退回设置首页：留在搜索页上，调用方后续的滚屏会全落在输入法上（#639）
+            self.say(msg)
+            if not self._leave_search():
+                self.say(f"  · 设置搜索页退不出去，当前停在 {self.focus()}")
+            return False
+
+        opened = self._search_page()
         if not opened:
-            self.say(f"  ✗ 设置搜索框没打开，跳过「{kw}」")
-            return False
+            self.reader.shell("am start -f 0x10008000 -a android.settings.SETTINGS")
+            for _ in range(4):
+                xy = wait.until(box_at, timeout=3, poll=0.15, now=time.time, sleep=time.sleep)
+                if not xy:
+                    break
+                time.sleep(0.4)                      # 首页还在加载时点击会被吞
+                self.click(*xy)
+                opened = bool(wait.until(self.edit_ready, timeout=2, poll=0.15,
+                                         now=time.time, sleep=time.sleep))
+                if opened:
+                    break
+        if not opened:
+            return give_up(f"  ✗ 设置搜索框没打开，跳过「{kw}」")
         if not self.type_text(kw):
-            self.say(f"  ✗ 设置搜索框输入「{kw}」失败，跳过")
-            return False
+            return give_up(f"  ✗ 设置搜索框输入「{kw}」失败，跳过")
         xy = wait.until(result_at, timeout=3, poll=0.15, now=time.time, sleep=time.sleep)
         if not xy:
-            self.say(f"  ✗ 没搜到「{entry or kw}」，跳过")
-            return False
+            return give_up(f"  ✗ 没搜到「{entry or kw}」，跳过")
         before = self.focus()
         self.click(*xy)
 
@@ -1091,11 +1293,11 @@ class Phone:
             return self.focus() != before or not self.edit_ready()
 
         if not wait.until(left_search, timeout=3, poll=0.15, now=time.time, sleep=time.sleep):
-            self.say(f"  ✗ 搜索结果「{entry or kw}」没有打开，跳过")
-            return False
+            return give_up(f"  ✗ 搜索结果「{entry or kw}」没有打开，跳过")
         time.sleep(0.3)                      # 结果页起来了，给它的内容留一拍
         return True
 
+    # ---------- 生命周期：拉起 App 与落点确认 ----------
     def start(self, pkg, activity=None, settle=1.2, foreground=None, expect=None, budget=6.0):
         """拉起 App；之后 settle 秒内冒出来的更新/推荐弹窗顺手点掉。
 
@@ -1175,7 +1377,9 @@ class Phone:
         self.check_alive()
         self.miss = 0
         if activity:
-            result = self.reader.shell(f"am start -f 0x10008000 -n {pkg}/{activity}")
+            # 页面名可能带 $（vivo `.Settings$AdAndPrivacyActivityForOsTwo`）：交给 shell 前整串引用一次。
+            # 脚本与 entries.Direct 保持字面量，used_by() 才认得出来源（#667）
+            result = self.reader.shell(f"am start -f 0x10008000 -n {shlex.quote(pkg + '/' + activity)}")
         else:
             self._u2(self.reader.app_stop, pkg)
             result = self.reader.shell(f"monkey -p {pkg} -c android.intent.category.LAUNCHER 1")
@@ -1191,46 +1395,104 @@ class Phone:
                     raise adb_link.lost((result.output or pm).strip())
                 raise RuntimeError(f"本机没有安装 {pkg}，跳过本段")
             raise RuntimeError(f"无法打开 {pkg}：{result.output.strip()[-250:]}")
-        deadline = time.monotonic() + 5
         expected = foreground or pkg
+        started = time.monotonic()
+        last = started
+        waited = 0.0                       # 只有确知「不是目标 App」的时间才计入启动等待
         while self.focus().split("/", 1)[0] != expected:
-            if self.focus().split("/", 1)[0] in PERMISSION_CONTROLLERS:
+            current = self.focus().split("/", 1)[0]
+            now = time.monotonic()
+            if not unknown_focus(current):
+                waited += now - last       # 空焦点是窗口还没画出来，顺延到 LAUNCH_HARD_STOP 为止
+            last = now
+            if current in PERMISSION_CONTROLLERS:
                 self.dismiss()
-            if time.monotonic() >= deadline:
-                raise RuntimeError(f"{pkg} 没有进入前台，跳过本段")
+            if waited >= LAUNCH_WAIT or now >= started + LAUNCH_HARD_STOP:
+                # 带上落点（谁抢了前台、页面长什么样）：没有包名就分不清该加白名单还是改判据（#547）。
+                where, detail = self._page_diagnosis()
+                raise RuntimeError(f"{pkg} 没有进入前台，跳过本段（停在 {where}；{detail}）")
             time.sleep(0.2)
+
+        def leave_foreground():
+            # 同 #547：这条报错命中 79 份上报、51 个型号，缺的从来都是「是谁盖住了」。
+            where, detail = self._page_diagnosis()
+            raise RuntimeError(f"{pkg} 启动后离开前台，停止本段以免操作其他 App（停在 {where}；{detail}）")
+
+        streak = 0                          # 连续读到别的 App 的帧数，读到目标包或读空就清零
         def check_foreground():
+            """确认前台：落在目标 App 返回真（这一屏可以读、可以关弹窗），读不出或别的 App 返回假。"""
+            nonlocal streak
             current = self.focus().split("/", 1)[0]
             # 权限申请可能在首页已出现后才弹出，也只能拒绝；不在其他 App 上找关闭按钮。
             if current in PERMISSION_CONTROLLERS:
                 give_up_at = time.monotonic() + 3
-                while current in PERMISSION_CONTROLLERS or not current:
+                while current in PERMISSION_CONTROLLERS or unknown_focus(current):
                     if time.monotonic() >= give_up_at:
                         break
                     if current and not self.dismiss():
                         break
                     time.sleep(.2)
                     current = self.focus().split("/", 1)[0]
-            if current != expected:
-                raise RuntimeError(f"{pkg} 启动后离开前台，停止本段以免操作其他 App")
+                if current in PERMISSION_CONTROLLERS:      # 等满 3 秒仍在：确知被它占住
+                    leave_foreground()
+            if unknown_focus(current):
+                streak = 0
+                return False
+            if current == expected:
+                streak = 0
+                return True
+            streak += 1
+            if streak >= FOREIGN_STREAK:
+                leave_foreground()
+            return False
 
         # 旧版商店冷启动可能暂时没有可读文字；空白不等于广告，不能盲按返回退出 App。
         t = time.time()
-        while time.time() - t < 8:
-            check_foreground()
-            if self.texts():               # 一两个标签也可能是正常首页
-                break
-            self.dismiss()                # 仅尝试可识别的关闭 / 拒绝按钮
+        while time.time() - t < LAUNCH_HARD_STOP:
+            if check_foreground():         # 不在别的 App 上读页面、关弹窗
+                if self.texts():           # 一两个标签也可能是正常首页
+                    break
+                self.dismiss()             # 仅尝试可识别的关闭 / 拒绝按钮
             time.sleep(.2)
         else:
-            raise RuntimeError(f"{pkg} 启动后 8 秒仍读不到页面，停止本段；请确认首页已加载后重试")
+            raise RuntimeError(f"{pkg} 启动后 {LAUNCH_HARD_STOP} 秒仍读不到页面，停止本段；请确认首页已加载后重试")
 
         t = time.time()                    # 首屏加载较慢时，也要给引导/更新弹窗留下处理时间
         while time.time() - t < settle:
-            check_foreground()
-            self.dismiss()
+            if check_foreground():
+                self.dismiss()
             time.sleep(0.4)
-        check_foreground()
+        # 收尾至少再读一次：最后一拍被别的 App 抢了前台也当启动成功的话，后面的段会对着它操作。
+        # 那一帧不判，读到别的 App 就把它攒够才停；读空或回到目标包就结束（跳包过渡会自己清零）。
+        while True:
+            if check_foreground() or not streak:
+                break
+            time.sleep(.2)
+
+
+MISSED_SHOWN = 8    # 收尾那行最多列几个没拨动的开关，其余折成「等 N 个」
+
+
+def missed_line(missed, limit=MISSED_SHOWN):
+    """没拨动的开关拼成一行：`页面 · 标题`，多的折成「等 N 个」。页名缺省时只写标题。"""
+    names = "、".join(f"{pg} · {t}" if pg else t for pg, t in missed[:limit])
+    more = len(missed) - limit
+    return f"没拨动的开关：{len(missed)} 个（{names}{f' 等 {more} 个' if more > 0 else ''}）"
+
+
+def report_run(g, p):
+    """机型脚本跑完的收尾：先报没做成的段，再报没拨动的开关；任一非空就返回 1（#788）。
+
+    `g` 是 `exec` 的脚本作用域，`p` 是这一轮的 Phone。
+    段名同时发 `failed_steps` 事件（客户端按它只重跑那几段，#638）；没拨动的开关只有人读的这一行，
+    客户端按退出码把整个任务标「失败」。#758 的摘要要把它算进「K 段未完成」，得先有页→段映射。
+    """
+    if g.get("FAILED_STEPS"):
+        events.emit("failed_steps", steps=list(g["FAILED_STEPS"]))
+        print("未完成步骤：" + "、".join(g["FAILED_STEPS"]), flush=True)
+    if p.missed:
+        print(missed_line(p.missed), flush=True)
+    return 1 if g.get("FAILED_STEPS") or p.missed else 0
 
 
 def main():
@@ -1247,10 +1509,11 @@ def main():
         print(f"✗ {e}", flush=True)
         sys.exit(1)
     except Exception as e:
-        gone = adb_link.lost_from(e, a[1])     # 读屏库的断线异常不是 RuntimeError（错误日志 10-28）
-        if gone is None:
+        # 断线 / 读屏慢一次：给一句人话，不打印 Python 报错堆栈（#731）
+        message = adb_link.failure_message(e, a[1])
+        if message is None:
             raise
-        print(f"✗ {gone}", flush=True)
+        print(f"✗ {message}", flush=True)
         sys.exit(1)
 
 
@@ -1317,8 +1580,7 @@ def execute(p, cmd, rest):
                     f.write(f"{pg}\t{tt}\n")
         except OSError:
             pass
-        if g.get("FAILED_STEPS"):
-            print("未完成步骤：" + "、".join(g["FAILED_STEPS"]), flush=True)
+        if report_run(g, p):
             sys.exit(1)
     else:
         print(__doc__)

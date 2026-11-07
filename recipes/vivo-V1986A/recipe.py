@@ -18,6 +18,7 @@ MODELS = ["V1986A"]
 import time
 
 ONLY = globals().get("ONLY") or []
+FAILED_STEPS = []
 
 
 def step(name):
@@ -30,7 +31,8 @@ def step(name):
             try:
                 f()
             except Exception as e:
-                print(f"  ✗ 出错：{e}")
+                FAILED_STEPS.append(name)
+                print(f"  ✗ 未完成：{e}")
             print(f"  ({time.time()-t:.0f} 秒)")
         return f
     return deco
@@ -65,8 +67,9 @@ def my_tab():
 
 
 def off_one(keyword, page):
-    """按开关自身状态关一个开关并回读：标题会随状态变成「…，开启 / …，关闭」，
-    引擎按标题核对会误报，本页用这个。返回 None=本来关着，True=关掉，False=没关掉。"""
+    """按开关自身状态关一个开关并回读。返回 None=本来关着，True=关掉，False=没关掉。
+    （旧注释说的「标题随状态变化致引擎误报」已由引擎在标题产出处剥掉尾缀修复，#565；
+    本页的独立回读保留——没有真机，不敢顺手改脚本行为。）"""
     hits = [(t, c, xy) for t, c, xy in p.switches() if keyword in t]
     if not hits:
         print(f"  ✗ 没找到「{keyword}」开关"); return False

@@ -15,10 +15,12 @@
 | REDMI K80 至尊版（25060RK16C） | HyperOS 2（BP2A.250605.031.A3），Android 16 | 2026-10-27 真机实测；专用脚本九段全通过并回读（recipes/redmi-25060RK16C） |
 | REDMI K80 Pro（24122RKC7C） | HyperOS OS3.0.304.0.WOMCNXM，Android 16 | 2026-10-29 真机实测；首轮借 K70 路径关 20 项，专用脚本九段复跑 172 秒、0 异常（`recipes/redmi-24122RKC7C`，见 [实测记录](../15-红米K80Pro实测.md)） |
 | REDMI K90 Pro Max（25102RKBEC） | HyperOS OS4.0.2.0.XPMCNXM，Android 17 | 2026-10-27 实测，九段机型脚本全通过（169 秒） |
+| REDMI K90 Ultra（M332BF） | HyperOS OS4.0.4.0.XHPCNXM，Android 17 | 2026-10-31 社区实测（[Issue #374](https://github.com/rddmwmddr/android-ad-cleaner/issues/374)）；专用脚本按报告者规格重写，待其用新版复测 |
 | Redmi Note 12 Turbo（23049RAD8C） | HyperOS OS3.0.5.0.VMRCNXM，Android 15 | 2026-10-25 实测（九段脚本跑通，用时约 3.5 分钟） |
 | Redmi K70（23113RKC6C） | HyperOS OS3.0.307.0.WNKCNXM，Android 16 | 2026-10-26 无线+有线：9 段专用脚本；当前目标 20 项；本轮实测含已移除的小说 1 项；浏览器「最新资讯」disabled，未操作 |
 | Redmi K70 Pro（23117RK66C） | HyperOS OS3.0.306.0.WNMCNXM，Android 16 | 2026-10-29～30 实测；专用脚本与验证范围见 [K70 Pro 实测](../14-红米K70Pro实测.md) |
 | Redmi Note 14 5G（24094RAD4C） | HyperOS OS3.0.306.0.WOQCNXM，Android 16 | 2026-10-30 真机实测；专用八段脚本首轮关闭 20 项（记账修复前统计，不含普通点击关掉的 4 项），复跑 291 秒、21 项回读、调整 0 项 |
+| Xiaomi 13（2211133C） | HyperOS OS3.0.309.0.WMCCNXM，Android 16 | 2026-11-05 社区实测（[Issue #281](https://github.com/rddmwmddr/android-ad-cleaner/issues/281)）；无专用脚本，客户端按底包自动借 `recipes/xiaomi-24129PN74C`，差异见[文末](#xiaomi-132211133c的差异) |
 | Xiaomi 13 Ultra（2304FPN6DC） | HyperOS OS3.0.308.0.WMACNXM，Android 16 | 2026-10-28 实测；九段脚本复跑通过，约 3 分 16 秒 |
 | Xiaomi 14 Pro（23116PN5BC） | HyperOS OS3.0.308.0.WNBCNXM，Android 16 | 2026-10-29 社区实测（[Issue #317](https://github.com/rddmwmddr/android-ad-cleaner/issues/317)）；与 13 Ultra 共用 `recipes/xiaomi-2304FPN6DC`，安全模式下九段跑通、每步回读，仅浏览器「搜索设置」未命中 |
 
@@ -36,7 +38,23 @@
 
 **K90 Pro Max 与上面两台的两处差异**：① 设置首页一屏放不下，「隐私与安全」在第二屏，要往下滑一段才看得到；②「隐私与安全」打开的是安全中心的 `PrivacySafetyActivity`，只有「隐私 / 安全」两个分栏、默认停在「隐私」，得先切到「安全」分栏，「更多安全设置」在这一页的最末尾。机型脚本 `recipes/xiaomi-25102RKBEC/` 已按这两点写。
 
+**K90 Ultra（M332BF，HyperOS OS4.0.4.0.XHPCNXM）与 18 Pro Max 的四处差异**（2026-10-31 社区实测，[Issue #374](https://github.com/rddmwmddr/android-ad-cleaner/issues/374)）：① 广告服务在「安全」分栏 →「更多安全设置」页底，直达 `com.android.settings/.ad.AdServiceSettings` 后这段从 50 秒降到 2 秒；② 这一页的开关说明行含「关闭后，广告数量不会因此减少……」，`p.start()` 启动后的弹窗清理会把它当 ✕ 点掉，等于自己拨一次开关，脚本改用 `am start` 直达；③ 主题商店的齿轮会先命中「设置壁纸」，脚本的 `gear()` 只认正好是「设置」；④ 浏览器主设置页是 `com.android.browser/.BrowserSettingsActivity`（工具栏齿轮进的是首页编辑面板），关「个性化内容推荐 / 个性化广告推荐」各弹一次「关闭提醒」，要点「确认关闭」。机型脚本 `recipes/xiaomi-M332BF/` 已按这四点写，本仓库未在该机复跑，待报告者用新版复测。
+
 Xiaomi 18 Pro Max 和 18 Fold 的系统底包相同，差别在 App 版本：商店、浏览器、全局搜索、手机管家升级后入口变了。Redmi K70 是 HyperOS 3 / Android 16，入口单独记录。下面每一项都写了「旧版 / 新版」两种入口，按你手机上看到的选。
+
+**Xiaomi 18 Pro Max（M154FF，HyperOS 4.0.24）这五段有可直达的导出页**（全局搜索、手机管家本来就走直达，不在此列），2026-11-07 本机实测，机型脚本 `recipes/xiaomi-M154FF/` 已改成先直达、打不开再走菜单。下表「落点判据」是该页首屏能读到的字：
+
+| 分组 | 直达页面 | 落点判据 |
+|---|---|---|
+| 系统广告 | `com.android.settings/.ad.AdServiceSettings` | 个性化广告推荐 |
+| 应用商店 | `com.xiaomi.market/.ui.MarketPreferenceActivity` | 通知设置 |
+| 下载管理 | `com.android.providers.downloads.ui/.activity.InfoFlowSettingActivity` | 资源推荐 |
+| 浏览器 | `com.android.browser/.preferences.activity.CustomizationPreferenceActivity` | 个性化内容推荐 |
+| 日历 | `com.android.calendar/.settings.UserExperienceActionBarActivity` | 内容推广 |
+
+浏览器另有 `com.android.browser/.BrowserSettingsActivity`，第二跳是为了让「主页设置 / 搜索设置 / 功能设置」这几个子项可达；这一页打不开时脚本只跳过这三个子项，不把整段记成未完成（18 Fold 这类没有该页的版本走的就是这条路，仅单测）。后台屏上首页的工具栏和底栏认不出来，「拉首页 → 我的 / 菜单 → 设置」这条老路会报「设置入口未找到」，直达后不再依赖首页。
+
+试过但没用上的：`ThemeSettingsActivity` 是系统的个性主题页，不是主题商店的设置页；`mibrowser://personalized/single` 指向不明确，会弹「打开方式」；`CalendarActionbarSettingsActivity` 首屏没有「用户体验」，直接用上面那个 Activity。
 
 Xiaomi Pad 7 是平板，设置首页左右分栏，差异单独列在文末的[「Pad 7 差异」](#xiaomi-pad-7os20208的差异)。
 
@@ -58,9 +76,24 @@ REDMI K80 至尊版（HyperOS 2 / Android 16）结构差异：「隐私与安全
 | 下载管理 | 页面上**没有齿轮**，设置在右上「更多」按钮的弹窗里 → 「设置」→ 信息流设置 |
 | 手机管家 | 「个性化推荐」在隐私设置里；垃圾清理设置里是「推荐内容」。实测都是关的 |
 | 主题 | 每次联网时通知实测已关；隐私设置「个性化推荐」出厂就是关的 |
-| 天气和日历 | 天气齿轮进设置页，「用户体验计划」里「天气视频卡片」默认开着。日历的齿轮打开的是 `PopupWindow`，不是设置页；脚本按「没有可识别的设置入口」跳过（#407 真机焦点，天气设置页的 Activity 名待复测） |
+| 天气和日历 | 天气齿轮进设置页，「用户体验计划」里「天气视频卡片」默认开着。日历的齿轮打开的是 `PopupWindow`，不是设置页；脚本按「没有可识别的设置入口」跳过（#407 真机焦点；天气设置页的 Activity 见[Xiaomi 13 一节](#xiaomi-132211133c的差异)） |
 
 **浏览器实测开着并已关闭的广告项**只有两个：🔴 搜索设置「显示猜你想搜模块」、🔴 功能设置「运营任务」（做任务得金币挣红包）。出厂就是关的：个性化内容推荐、个性化广告推荐、小说、宫格位推送。保留：扫一扫、搜索历史、书签、最常访问、我的网盘、翻译提示。
+
+---
+
+## Xiaomi 13（2211133C）的差异
+
+HyperOS OS3.0.309.0.WMCCNXM / Android 16，2026-11-05 社区实测（[Issue #281](https://github.com/rddmwmddr/android-ad-cleaner/issues/281)）。没有专用脚本：除浏览器段外九段都是 0 项（出厂即关），为一段差异复刻一份脚本不划算。客户端按底包（`BP2A.250605.031.A3`）自动借 `recipes/xiaomi-24129PN74C`，不用 `--ref`。
+
+| 项 | 这台机的入口 |
+|---|---|
+| 浏览器 20.30.1031026 | 底栏仍是 主页/视频/AI搜索/菜单/我的，入口是底部「菜单」→ 弹窗里的「设置」（`id=action_menu_setting`）。**「隐私和安全」这一页已经没有了**；功能设置里**「运营任务」也没了**（20.29 还有），「小说」还在；搜索设置 8 个开关默认全开 |
+| 天气 | 设置页 Activity 是 `com.miui.weather2.ActivitySet`。这台上**没有「用户体验计划」**，也没有天气视频卡片 / 内容推广开关 |
+| 日历 | 入口是右上那个 ImageView `id=com.android.calendar:id/settings_button`（**不是文字「更多」**）→ PopupWindow → `CalendarActionbarSettingsActivity` → 底部「用户体验计划」→ `UserExperienceActionBarActivity`；唯一开关「内容推广」出厂就是关的 |
+| 主题 | 设置页是 `ThemePreferenceActivity`、隐私设置是 `PrivacySettingsActivity`，两项都已经是关的 |
+
+**工具栏和菜单弹窗里各有一个叫「设置」的图标**：弹窗那个在屏幕下半段（1080 宽下约 y=1149，`id=action_menu_setting`），工具栏那个在上半屏（`id=simple_page_settings`）。按文字点会先命中工具栏那个、进首页编辑面板，后面几页入口全部找不到，整段 0 项又不报错——脚本因此只点下半屏那一行并核对落点（#586）。
 
 ---
 
@@ -115,7 +148,7 @@ REDMI K80 至尊版（HyperOS 2 / Android 16）结构差异：「隐私与安全
 - 🟢 自动更新（和上一项挨着，别点错行）
 - 🔴 隐私设置 → 个性化推荐
 - ⚠️ K90 Pro Max 打开主题商店会落到 `com.android.thememanager` 的 `ThemeResourceProxyTabActivity`；系统广告组件 `com.miui.systemAdSolution` 未挂起时，开屏窗会抢焦点，自动化会被中断。先执行 `run.py -s 序列号 suspend com.miui.systemAdSolution`（可还原）再跑这一段。
-- ⚠️ REDMI K80 Pro（HyperOS 3.0.304.0）同样会跳包：`com.miui.themestore` 拉起后立刻变成 `com.android.thememanager`，`p.start()` 的前台校验会判「启动后离开前台」并停段。直达 `com.android.thememanager/.ThemeResourceProxyTabActivity` 后「我的 → 齿轮」稳定可达。
+- ⚠️ REDMI K80 Pro（HyperOS 3.0.304.0）同样会跳包：`com.miui.themestore` 拉起后立刻变成 `com.android.thememanager`，`p.start()` 的前台校验曾把它判成「启动后离开前台」并停段；#581 起读不出前台与一两帧的跳包过渡不算离开，连续外占才停段（[ADR-0022](../adr/0022-launch-foreground.md)）。直达 `com.android.thememanager/.ThemeResourceProxyTabActivity` 后「我的 → 齿轮」稳定可达。
 
 ## 6. 浏览器
 
@@ -125,7 +158,7 @@ REDMI K80 至尊版（HyperOS 2 / Android 16）结构差异：「隐私与安全
 - 🔴 隐私和安全 → 个性化内容推荐、个性化广告推荐（新旧版都有）
 - 🔴 旧版：主页设置 → 宫格位推送；搜索设置 → 显示猜你想搜模块；功能设置 → 小说（🟢 我的网盘）
 - ⚠️ 新版这三项都没有。主页设置只剩「探索版 / 自定义主页」，自定义主页要填网址，`about:blank` 填不进去，可以填 `https://www.bing.com`。按你的喜好选，不选也行。
-- ⚠️ REDMI K80 Pro（浏览器 20.x，HyperOS 3.0.304.0）：这版有「我的」，但它是**顶部标签**（主页 / 视频 / AI搜索 / 免费小说 / 我的），不是底部；「设置」是顶部右侧的齿轮 `ImageView`，文字就是「设置」（1080 宽下约 `[922,133]-[1038,249]`）。冷启动会偶发被启动过渡窗判成「离开前台」，脚本里先 `am force-stop` 再直达 `BrowserActivity` 重试；80 毫秒短按点不动齿轮时改用 `input tap`。
+- ⚠️ REDMI K80 Pro（浏览器 20.x，HyperOS 3.0.304.0）：这版有「我的」，但它是**顶部标签**（主页 / 视频 / AI搜索 / 免费小说 / 我的），不是底部；「设置」是顶部右侧的齿轮 `ImageView`，文字就是「设置」（1080 宽下约 `[922,133]-[1038,249]`）。冷启动会偶发冒出启动过渡窗（#581 起不再因此判「离开前台」），脚本里仍先 `am force-stop` 再直达 `BrowserActivity` 重试；80 毫秒短按点不动齿轮时改用 `input tap`。
 - ⚠️ 浏览器会弹小米账号登录框，点「取消」。
 
 **Xiaomi 17 Ultra（浏览器 20.29.1031010，2026-10-28）**：

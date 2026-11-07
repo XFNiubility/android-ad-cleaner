@@ -9,11 +9,10 @@ import sys
 import tempfile
 import threading
 import unittest
-import time
 import uuid
 from unittest.mock import Mock, patch
 
-from fixtures import FakeProc, FakeRunner, job_stub
+from fixtures import Clock, FakeProc, FakeRunner, job_stub
 from gui import app
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -29,15 +28,16 @@ class LockTests(unittest.TestCase):
         source = "from ui_session import DeviceLock; import sys; lock=DeviceLock(sys.argv[1]); print('locked',flush=True); sys.stdin.read()"
         env = dict(os.environ, PYTHONPATH=str(ROOT / "tool"))
         child = subprocess.Popen([sys.executable, "-u", "-c", source, serial], stdin=subprocess.PIPE,
-                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, encoding="utf-8", errors="replace", env=env)
         try:
             self.assertEqual(child.stdout.readline().strip(), "locked")
             with self.assertRaises(session.DeviceBusyError):
                 session.DeviceLock(serial, wait=0)
-            started = time.time()
-            with self.assertRaises(session.DeviceBusyError):
-                session.DeviceLock(serial, wait=1)    # 先等一会儿，等不到才报占用
-            self.assertGreaterEqual(time.time() - started, 0.9)
+            clock = Clock()
+            with patch.object(session, "time", clock), \
+                    self.assertRaises(session.DeviceBusyError):
+                session.DeviceLock(serial, wait=20)   # 等到 deadline 才报占用，不用真等 20 秒
+            self.assertGreaterEqual(clock.t, 20)
             other = session.DeviceLock(serial + "-different-device")
             other.close()
             child.terminate(); child.wait(timeout=10)
