@@ -1,22 +1,22 @@
 # 发版后复测清单
 
-Issues labelled `waiting-for-verify` have a fix on `main` that the reporter has not confirmed on hardware yet. Nothing closes them except the reporter's own reply after installing the release that contains the fix. This file is the queue of what each release owes.
+[triage-labels.md](triage-labels.md) owns what `waiting-for-verify` means and what closes it; this file is the queue of what each release owes those issues.
 
 发版本身——跑验证、打 tag、写 Release 正文、同步 README / `index.html` / `latest.json` / Gitee——见 [release.md](release.md)。这份文件只管发版**之后**。
 
 ## 每次发版后照做
 
-1. 取出当前队列：
+1. 取出当前队列： <!-- rule:doc.release.followup-queue -->
 
    ```bash
    gh issue list --label waiting-for-verify --state open
    ```
 
-2. 逐条确认修复是否进了本次构建。版本号对不上就跳过 —— 让报告者跑旧版去验新代码，只会再收一份重复上报。
+2. 逐条确认修复是否进了本次构建。版本号对不上就跳过 —— 让报告者跑旧版去验新代码，只会再收一份重复上报。 <!-- rule:doc.release.followup-version-gate -->
 
-3. 在每条 issue 上留一条复测请求，`@` 报告者，写清装了哪个版本、要观察哪一句输出。模板见下。
+3. 在每条 issue 上留一条复测请求，`@` 报告者，写清装了哪个版本、要观察哪一句输出。模板见下。 <!-- rule:doc.release.followup-request-template -->
 
-4. 报告者确认后关闭 issue 并摘掉 `waiting-for-verify`；报告失败就摘标、改回 `needs-triage`，把日志当新证据重新归类。
+4. 报告者确认后关闭 issue 并摘掉 `waiting-for-verify`；报告失败就摘标、改回 `needs-triage`，把日志当新证据重新归类。 <!-- rule:doc.release.followup-close-or-reopen -->
 
 ## 复测请求模板
 
@@ -140,6 +140,7 @@ Issues labelled `waiting-for-verify` have a fix on `main` that the reporter has 
 | #702 | @woosphinx | 荣耀 600 超级版 / VKJ-AN00 / MagicOS（Android 16） | 诊断在 `adb 设备：0 台` 时说明调试接口有没有登记 adb 需要的 GUID（#802，未发布） | 报告者的机器已按排障文档补过 GUID，应看到「ADB 接口已登记 adb 需要的 device interface GUID」这一行；换一台没修过的同类机能验到「未登记…（实际登记的 GUID：{…}）」。原有的 `- USB 设备：…硬件 ID：…` 行仍在、末尾没有序列号，也能顺带销掉 #673 在 docs/09 的缺口 |
 | #639 | @neurotracee | HONOR DVD-AN00 / MagicOS 10.0.0.179（Android 16，借 `recipes/honor-PNM-AN10`） | 设置搜索失败后离开搜索页并回到设置首页（未发布） | YOYO 段搜不到「新闻资讯」时日志出现「✗ 没搜到「新闻资讯」，跳过」后直接进下一段，手写输入法收起，不再一直画「丨」、不再空转 78 秒。若退场没成功会多一行「· 设置搜索页退不出去，当前停在 …」，把那行贴回来 |
 | #597 | @AAAAAPang | Windows 11 24H2，便携版 zip 解压（手机是 REDMI K80 Pro / 24122RKC7C） | 随包 `<exe>.config` 打开 `loadFromRemoteSources`，并给这一类失败单独归因（PR #810，未发布） | 解压后 `AndroidAdCleaner.exe` 与 `aac-cli.exe` 旁应各有一份同名 `.exe.config`，双击直接能起，不用再手工建文件；仍起不来时弹窗单独说「本地程序集被判成远程来源」并给出这两步，不再是「按别的原因退出」；`--smoke-gui` 的 `startup:` 行是 `webview2=… motw=… load=unresolved` |
+| #832 | @SonettoGu14 | Xiaomi MIX Flip 2 / 2505APX7BC / HyperOS、Android 16（底包 `BP2A.250605.031.A3`，合盖外屏） | 新增专用脚本 `recipes/xiaomi-2505APX7BC`（PR #836，未发布） | 不带 `--ref` 跑 `recipe`：`check` 的「机型脚本」一行写 `recipes/xiaomi-2505APX7BC/recipe.py`、版本判定「相同」。主题段不再停在「「隐私设置」没找到」，浏览器段不再报「未找到浏览器底部「菜单」」，两段都该出现逐项核对行；天气与日历两段各打一行「天气：本版无此类开关…跳过」「日历：本版无此类开关…跳过」，这两页上不该有任何开关被拨动。仍有段失败时会打印停在哪个 Activity，把那行贴回来 |
 
 2026-11-07：#597 随 PR #810 合入 `main`（`8b52891`），本行补登。修复是随包配置加一条启动归因，报告者的机器要装下一版 zip 才验得到；`build-windows.yml` 不守 PR，两份 config 真进 zip 只在构建机上跑一次才能确认。
 
@@ -151,7 +152,7 @@ Issues labelled `waiting-for-verify` have a fix on `main` that the reporter has 
 
 ## 待真机反馈（不是 `waiting-for-verify`）
 
-下面这张票缺的是真机数据，不是修复后的复测：代码还没动，票保持 `needs-info`，下次发版催复测时一并 `@` 对方即可，不算 `waiting-for-verify`。
+下面这张票缺的是真机数据，不是修复后的复测：代码还没动，票保持 `needs-info`，下次发版催复测时一并 `@` 对方即可，不算 `waiting-for-verify`。 <!-- rule:doc.release.followup-pending-feedback-is-not-verify -->
 
 | Issue | 谁 | 机型 / 系统 | 要什么 |
 | ----- | -- | ----------- | ------ |
@@ -159,4 +160,4 @@ Issues labelled `waiting-for-verify` have a fix on `main` that the reporter has 
 
 ## 为什么不用 `ready-for-agent` 顶着
 
-一个已修完、只等真机确认的 issue，长着和待实现 issue 一模一样的外观：代码不在发布版里，报告者还在遇到问题。`ready-for-agent` 会让下一个接手的智能体（或人）从头再实现一遍；`needs-info` 会让人以为缺的是诊断数据。两种误判在 2026-10-29 都发生过一次。
+一个已修完、只等真机确认的 issue，长着和待实现 issue 一模一样的外观：代码不在发布版里，报告者还在遇到问题。`ready-for-agent` 会让下一个接手的智能体（或人）从头再实现一遍；`needs-info` 会让人以为缺的是诊断数据。两种误判在 2026-10-29 都发生过一次。 <!-- rule:doc.release.followup-why-not-ready -->
