@@ -7,14 +7,9 @@ import os
 import re
 import time
 
-import adb_link
 from fast import ScreenLocked, bounds
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
 RESULTS = []
 VERIFIED_SWITCHES = 0
-HALTED = False
 
 SETTINGS = "com.android.settings/com.oplus.settings.feature.homepage.OplusSettingsHomepageActivity"
 OAID = "com.android.settings/com.oplus.settings.feature.notification.oaid.OAIDActivity"
@@ -43,44 +38,6 @@ STORE_PROMOTIONS = [
     "更新&下载专区：底部弹窗推荐", "活动式详情页", "详情页：活动", "详情页：限时活动",
     "手机管家：应用推荐", "文件管理：应用推荐", "福利专区",
 ]
-
-
-def require(ok, message):
-    if not ok:
-        raise RuntimeError(message)
-
-
-class SkipStep(RuntimeError):
-    pass
-
-
-def step(name):
-    def decorate(action):
-        global HALTED
-        if ONLY and name not in ONLY:
-            return action
-        print(f"\n== {name}", flush=True)
-        started = time.monotonic()
-        p.miss = 0
-        try:
-            if HALTED or p.locked():
-                raise ScreenLocked("手机锁屏或前段已停止，请机主解锁后重试")
-            action()
-            RESULTS.append((name, "completed"))
-        except adb_link.DeviceLost:
-            raise
-        except SkipStep as reason:
-            RESULTS.append((name, "skipped"))
-            print(f"  · 跳过：{reason}", flush=True)
-        except Exception as error:
-            if isinstance(error, ScreenLocked):
-                HALTED = True
-            FAILED_STEPS.append(name)
-            RESULTS.append((name, "incomplete"))
-            print(f"  ✗ 未完成：{error}", flush=True)
-        print(f"  ({time.monotonic() - started:.0f} 秒)", flush=True)
-        return action
-    return decorate
 
 
 def wait_page(activity, title=None, timeout=6):
@@ -139,7 +96,7 @@ def close_named(names, page, activity, title=None, max_screens=8, reopen=None, d
     """精确核对标题再调用引擎；回读关闭状态，同时保留其他功能开关。"""
     global VERIFIED_SWITCHES
     before = read_switches(activity, title, max_screens, expect=names)
-    require(all(name in before for name in names), f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page)
     if any(before[name] for name in names):
         p.top(max_screens)
         p.off(only=list(names), keep=[name for name in before if name not in names],
@@ -235,7 +192,7 @@ def _():
     model = p.d.shell("getprop ro.product.model").output.strip()
     build = p.d.shell("getprop ro.build.display.id").output.strip()
     if os.environ.get("AAC_REF") or model != "PLG110" or not build.startswith(BUILD):
-        raise SkipStep("参考或版本不同时不批量处理逐应用广告跟踪，需重新核对")
+        skip("参考或版本不同时不批量处理逐应用广告跟踪，需重新核对")
     print("  将关闭逐应用 OAID 广告跟踪许可；不重置设备标识符。", flush=True)
     system_settings()
     require(p.setting("设备标识与广告", "设备标识与广告"), "未找到设备标识与广告入口")

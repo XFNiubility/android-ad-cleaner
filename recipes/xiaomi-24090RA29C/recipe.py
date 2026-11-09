@@ -6,26 +6,7 @@
 BUILD = "OS3.0.309.0"
 MODELS = ["24090RA29C"]
 import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
-
-
-def step(name):
-    def deco(f):
-        if (not ONLY or name in ONLY) and p.locked():
-            print(f"\n== {name}：手机锁屏了，后面的都不跑"); return f
-        if not ONLY or name in ONLY:
-            print(f"\n== {name}"); p.miss = 0
-            t = time.time()
-            try:
-                f()
-            except Exception as e:
-                FAILED_STEPS.append(name)
-                print(f"  ✗ 未完成：{e}")
-            print(f"  ({time.time()-t:.0f} 秒)")
-        return f
-    return deco
+from entries import THEME_DEAD_ENDS
 
 
 def gear(toolbar_only=False):
@@ -90,11 +71,6 @@ def tap_tab(name):
 def tap_any(*names, scrolls=6):
     """依次试几个入口名，点中一个就返回 True。"""
     return any(maybe(n, scrolls) for n in names)
-
-
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不报「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
 
 
 @step("系统广告")
@@ -164,7 +140,8 @@ def _():
         # 直达代理页前台就是它自己，没有上面那条前台误判，可以交给 start() 等落点。
         if "package:" not in p.d.shell("pm path com.android.thememanager").output:
             print("  · 本机没有主题商店，跳过"); return
-        p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                      dead_ends=THEME_DEAD_ENDS, reason="没有主题商店，主题页打不开")
     time.sleep(3)
     p.dismiss()
     # 底部「我的」标签 → 右上齿轮（desc=设置，无文字）

@@ -6,26 +6,7 @@
 BUILD = "OS3.0.306.0"
 MODELS = ["24094RAD4C"]
 import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
-
-
-def step(name):
-    def deco(f):
-        if (not ONLY or name in ONLY) and p.locked():
-            print(f"\n== {name}：手机锁屏了，后面的都不跑"); return f
-        if not ONLY or name in ONLY:
-            print(f"\n== {name}"); p.miss = 0
-            t = time.time()
-            try:
-                f()
-            except Exception as e:
-                FAILED_STEPS.append(name)
-                print(f"  ✗ 未完成：{e}")
-            print(f"  ({time.time()-t:.0f} 秒)")
-        return f
-    return deco
+from entries import THEME_DEAD_ENDS
 
 
 def gear(toolbar_only=False):
@@ -92,11 +73,6 @@ def wait_bottom_tab(name, tries=5):
     return False
 
 
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不报「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
-
-
 def tap_any(*names, scrolls=6):
     """依次试几个入口名，点中一个就返回 True。"""
     return any(maybe(n, scrolls) for n in names)
@@ -106,8 +82,7 @@ def close_with_plain_tap(names, page):
     """下载管理和浏览器会吞掉短按；普通 tap 后确认，并核对其他开关未变。"""
     before = {title: on for title, on, _ in p.switches()}
     targets = [title for title in before if any(name in title for name in names)]
-    if not all(any(name in title for title in targets) for name in names):
-        raise RuntimeError(f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page, contains=True)
     for title in targets:
         if not before[title]:
             continue
@@ -194,7 +169,8 @@ def _():
         # 没有主题商店时直接起 thememanager：它没有 LAUNCHER activity，monkey 拉不起来（#730）
         if "package:" not in p.d.shell("pm path com.android.thememanager").output:
             print("  · 本机没有主题商店，跳过"); return
-        p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                      dead_ends=THEME_DEAD_ENDS, reason="没有主题商店，主题页打不开")
     time.sleep(3)
     if p.find("跳过广告"):
         p.tap("跳过广告", scrolls=0)

@@ -7,26 +7,7 @@
 BUILD = "BP2A"
 MODELS = ["25060RK16C"]
 import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
-
-
-def step(name):
-    def deco(f):
-        if (not ONLY or name in ONLY) and p.locked():
-            print(f"\n== {name}：手机锁屏了，后面的都不跑"); return f
-        if not ONLY or name in ONLY:
-            print(f"\n== {name}"); p.miss = 0
-            t = time.time()
-            try:
-                f()
-            except Exception as e:
-                FAILED_STEPS.append(name)
-                print(f"  ✗ 未完成：{e}")
-            print(f"  ({time.time()-t:.0f} 秒)")
-        return f
-    return deco
+from entries import THEME_DEAD_ENDS
 
 
 def gear(toolbar_only=False):
@@ -76,11 +57,6 @@ def browser_settings():
 def tap_any(*names, scrolls=6):
     """依次试几个入口名，点中一个就返回 True。"""
     return any(maybe(n, scrolls) for n in names)
-
-
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不报「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
 
 
 def tab_bot(name):
@@ -177,7 +153,8 @@ def _():
     if "package:" not in p.d.shell("pm path com.android.thememanager").output:
         print("  · 本机没有主题商店，跳过"); return
     # 实测：themestore 冷启动重定向到 thememanager 的过渡窗会把引擎前台校验搞崩；直接拉最终页最稳
-    p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+    start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                  dead_ends=THEME_DEAD_ENDS, reason="主题页打不开")
     if not (tab_bot("我的") or p.tap("我的", exact=True, scrolls=0)):
         print("  · 主题商店没有「我的」标签，跳过"); p.back(3); return
     if not (gear(toolbar_only=True) or gear()):

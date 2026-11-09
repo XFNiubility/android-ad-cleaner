@@ -12,39 +12,8 @@
 BUILD = "OS3.0.304.0"
 MODELS = ["24122RKC7C"]
 import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
+from entries import THEME_DEAD_ENDS
 VERIFIED_SWITCHES = 0
-
-
-def step(name):
-    def deco(f):
-        if ONLY and name not in ONLY:
-            return f
-        print(f"\n== {name}", flush=True)
-        p.miss = 0
-        t = time.time()
-        try:
-            if p.locked():
-                raise RuntimeError("手机锁屏了，请机主解锁后再跑")
-            f()
-        except Exception as e:
-            FAILED_STEPS.append(name)
-            print(f"  ✗ 未完成：{e}", flush=True)
-        print(f"  ({time.time()-t:.0f} 秒)", flush=True)
-        return f
-    return deco
-
-
-def require(ok, reason):
-    if not ok:
-        raise RuntimeError(reason)
-
-
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不算「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
 
 
 def tap_any(*names, scrolls=6):
@@ -125,8 +94,7 @@ def close_named(names, page, max_screens=2):
     p.top(max_screens)
     before = read_switches(max_screens)
     targets = [title for title in before if any(name in title for name in names)]
-    require(all(any(name in title for title in targets) for name in names),
-            f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page, contains=True)
     p.top(max_screens)
     p.off(only=names, page=page, max_screens=max_screens)
     p.top(max_screens)
@@ -211,7 +179,8 @@ def _():
 def _():
     # 主题商店冷启动会跳到 thememanager，引擎的前台校验会停段；直达代理标签页最稳。
     if "package:" in p.d.shell("pm path com.android.thememanager").output:
-        p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                      dead_ends=THEME_DEAD_ENDS, reason="主题页打不开")
     else:
         p.start("com.miui.themestore", foreground="com.android.thememanager")
     require(p.tap("我的", exact=True, scrolls=0), "未找到主题「我的」")

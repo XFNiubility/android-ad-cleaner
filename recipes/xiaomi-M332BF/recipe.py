@@ -5,28 +5,9 @@
 BUILD = "OS4.0.4"
 MODELS = ["M332BF"]
 import time
+from entries import THEME_DEAD_ENDS
 
 import adb_link
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
-
-
-def step(name):
-    def deco(f):
-        if (not ONLY or name in ONLY) and p.locked():
-            print(f"\n== {name}：手机锁屏了，后面的都不跑"); return f
-        if not ONLY or name in ONLY:
-            print(f"\n== {name}"); p.miss = 0
-            t = time.time()
-            try:
-                f()
-            except Exception as e:
-                FAILED_STEPS.append(name)
-                print(f"  ✗ 未完成：{e}")
-            print(f"  ({time.time()-t:.0f} 秒)")
-        return f
-    return deco
 
 
 def gear(toolbar_only=False):
@@ -73,11 +54,6 @@ def opened(start):
 def tap_any(*names, scrolls=6):
     """依次试几个入口名，点中一个就返回 True。"""
     return any(maybe(n, scrolls) for n in names)
-
-
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不报「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
 
 
 @step("系统广告")
@@ -147,7 +123,8 @@ def _():
     else:
         if "package:" not in p.d.shell("pm path com.android.thememanager").output:
             print("  · 本机没有主题商店，跳过"); return
-        p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                      dead_ends=THEME_DEAD_ENDS, reason="没有主题商店，主题页打不开")
     before = p.sig()
     if not p.tab("我的"):
         raise RuntimeError("主题商店底部「我的」标签没找到")

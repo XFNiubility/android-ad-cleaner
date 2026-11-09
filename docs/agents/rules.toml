@@ -28,7 +28,7 @@ id = "dev.tests.regression-command"
 source = "CLAUDE.md#开发"
 check = "none"
 status = "manual"
-why = "回归命令与解释器写过三种说法，agent 各自猜，报一串 ModuleNotFoundError 或跑出不同结果；CI 的 unittest job 恰好跑同一条命令、只装 requirements.txt，但没有测试比对正文与 CI，改错正文不会红。"
+why = "回归命令与解释器写过三种说法，agent 各自猜，报一串 ModuleNotFoundError 或跑出不同结果；CI 的 unittest job 跑的是同一条 discover，只是外面包了一层 coverage 收集（见 dev.coverage.two-platform-merge），但没有测试比对正文与 CI，改错正文不会红。"
 expires_if = "本地入口收成一条脚本、CI 不再直接跑 unittest discover 时删。"
 
 [[rule]]
@@ -64,6 +64,24 @@ why = "并行会话会在开工到推送之间推进 main，基于旧 SHA 推送
 expires_if = "平台保证 PR 冲突时仍跑 CI，或改由机器人自动 rebase 时删。"
 
 [[rule]]
+id = "dev.git.dco-signoff"
+source = "CLAUDE.md#开发"
+check = "ci:dco"
+status = "enforced"
+why = "DCO 此前只在本机 commit-msg 钩子里执行：未装钩子的那条线签署率 1%、外部贡献者 0%，同一条写下来的规则约束力取决于谁在哪台机器提交（#848）。job 在 PR 上跑，缺 signoff 或签署邮箱与作者不符就红，并点名 sha 与主题。"
+expires_if = "分支保护改用别的守卫接管 DCO，或仓库不再要求 DCO、改由平台自动签署时删。"
+since = "42e5a40"
+
+[[rule]]
+id = "dev.git.conventional-commits"
+source = "CLAUDE.md#开发"
+check = "ci:conventional"
+status = "enforced"
+why = "Conventional Commits 此前只在本机 commit-msg 钩子里执行：装着钩子的那条线合规率 97%，另一条 72%，同一条写下来的规则约束力取决于谁在哪台机器提交（#849）。job 在 PR 上跑，主题没有前缀、type 不在清单里或 scope 不合规就红，并点名 sha 与主题。"
+expires_if = "分支保护改用别的守卫接管主题校验，或仓库不再要求 Conventional Commits 时删。"
+since = "4d90593"
+
+[[rule]]
 id = "dev.ci.two-interpreters"
 source = "CLAUDE.md#开发"
 check = "none"
@@ -76,9 +94,17 @@ id = "dev.ruff.pinned-and-scoped"
 source = "CLAUDE.md#开发"
 check = "test:test_doc_consistency::LintCommandTests.test_ruff_targets_match_everywhere"
 status = "enforced"
-why = "CLAUDE.md 曾只写「同一份 CI 里跑 ruff」，本地没有可执行命令，agent 各自猜版本；现在版本钉 0.17.3、目标清单在 CLAUDE.md、release.md 与 CI 两个 job 三处逐字一致（b17d420、#624）。守卫比的是目标清单，版本号三处一致仍靠人。"
-expires_if = "CI 与本地共用一个命令来源、目标清单不再需要三处对照时，连同 LintCommandTests 一起删。"
+why = "CLAUDE.md 曾只写「同一份 CI 里跑 ruff」，本地没有可执行命令，agent 各自猜版本；现在版本钉 0.17.3、目标清单在 CLAUDE.md、release.md、CONTRIBUTING.md 与 CI 逐字一致（b17d420、#624；CONTRIBUTING.md 由 #851 补入），ruff 平台无关，只在 Linux job 跑一次（#856）。守卫比的是目标清单，版本号多处一致仍靠人。"
+expires_if = "CI 与本地共用一个命令来源、目标清单不再需要多处对照时，连同 LintCommandTests 一起删。"
 since = "b17d420"
+
+[[rule]]
+id = "dev.coverage.two-platform-merge"
+source = "CLAUDE.md#开发"
+check = "ci:coverage"
+status = "enforced"
+why = "覆盖率与 ruff 相反，结论依平台而变：`gui/app.py` 的 Windows 剪贴板分支在 Linux 上永远 0 覆盖，Windows job 又 skip 掉 POSIX-only 用例，任何单平台数字都低估。`coverage` job 只保证两份数据合得上（日志里的 `Combined 2 files`）与报告产出，不保证数字本身，也不设阈值——omit 清单与阈值都是判断题，硬编码进 CI 会长期误伤 Windows-only 分支（#858）。"
+expires_if = "Phase 2 上了 diff coverage 或门禁、这条要换成带判据的守卫时重写；只剩一个平台的 CI 时删。"
 
 [[rule]]
 id = "dev.tests.frontend-harness"
@@ -191,6 +217,14 @@ check = "code:tool/fast.py:plan_switches"
 status = "code"
 why = "目标选择、屏带过滤与 checked / kept / disabled 分散会让灰开关被当成没拨动（ADR-0008、ADR-0021）；off() 只做点击 → 回读 → 重试 → 报告，两个纯函数给出补点落点与回读结论。"
 expires_if = "拨动计划与回读合并成一个对象、调用方不再各自拼判定时删。"
+
+[[rule]]
+id = "dev.switches.missing-target-evidence"
+source = "CLAUDE.md#开发"
+check = "code:tool/recipe_kit.py:preamble"
+status = "code"
+why = "点名开关没出现时只报一句「未识别全部目标开关，未操作」，9 份 HyperOS 3.0 上报分不清是改名、页面空着还是根本没进页面（#903）；守卫原本在 14 处脚本里各写一份，补证据要改 14 遍，漏一处输出又分叉。"
+expires_if = "开关名单断言并入引擎、机型脚本不再各自核对页面上有哪些标题时删。"
 
 [[rule]]
 id = "dev.launch.foreground-ownership"
@@ -329,6 +363,14 @@ why = "adb 版本漂移会让读屏输出一起变，出问题先要能排除 ad
 expires_if = "安装包自带 adb、客户端不再下载 platform-tools 时删。"
 
 [[rule]]
+id = "dev.hdc.build-time-download"
+source = "CLAUDE.md#开发"
+check = "test:test_hdc_fetch::PlatformTableTest.test_pins_the_official_release_hashes"
+status = "enforced"
+why = "HDC 与共享库共约 19MB，曾经直接入库、永久留在 main 历史里；改成构建期从 OpenHarmony 7.0-Release 下载后，哈希是唯一的信任锚。守卫只比对三张表里的 tarball 与解出文件哈希，官方是否换了包仍靠人按 #898 的核对方式重验。"
+expires_if = "OpenHarmony SDK 有了可直接引用的包管理源、不再按 tarball 哈希取工具时删。"
+
+[[rule]]
 id = "dev.client.data-paths"
 source = "CLAUDE.md#开发"
 check = "code:gui/app.py:ClientData"
@@ -343,6 +385,14 @@ check = "test:test_win_preflight::StartupAdviceTests.test_motw_wins_over_the_loa
 status = "enforced"
 why = "启动失败有三种来源（缺 WebView2、MOTW、原文拒载），顺序错了会把带 MOTW 的 dll 报成「需要重装运行时」（#597、#811、ADR-0003）；判据只在 winpreflight.py。"
 expires_if = "Windows 安装包不再用 pywebview 与托管的 dll 时删。"
+
+[[rule]]
+id = "dev.windows.old-install-notice"
+source = "CLAUDE.md#开发"
+check = "test:test_win_preflight::OldInstallTests.test_an_old_install_next_to_a_portable_copy_is_reported"
+status = "enforced"
+why = "免安装版与安装版共用同一个 AppId，便携版完全在注册表之外，旧名「安卓去广告」的安装会一直留着（#814、#872）；判定要看四处键与当前 exe 目录，漏一处会漏提示，少比较一次目录会在新版已顶掉旧版时误提示。"
+expires_if = "免安装版不再与原安装并存，或 Windows 安装版不再走 Inno Setup 的卸载键时删。"
 
 [[rule]]
 id = "doc.numbers.reproducible-baselines"
@@ -943,7 +993,7 @@ id = "doc.release.android-ci-gate"
 source = "docs/agents/release.md#手机版 APK"
 check = "ci:assemble"
 status = "enforced"
-why = "Kotlin 侧此前没有任何 CI 覆盖，`Shell.kt` 编译不过能一路进 main（#678）；`android.yml` 的 assemble job 只编译 debug，不产出发版产物。"
+why = "Kotlin 侧此前没有任何 CI 覆盖，`Shell.kt` 编译不过能一路进 main（#678）；`android.yml` 的 assemble job 编译 debug 并跑协议层 JVM 单测，不产出发版产物（#856）。"
 expires_if = "手机版不再用 Gradle 构建、或发版流水线自己编译 APK 时删。"
 
 [[rule]]
@@ -991,7 +1041,7 @@ id = "doc.release.gitee-portable-wording"
 source = "docs/agents/release.md#一轮发版的产物顺序"
 check = "none"
 status = "manual"
-why = "国内走 Gitee 时 Windows 访客只拿得到免安装版，它不替换也不卸载旧版；正文、下载页、README、docs/08 与 Gitee 发行版正文各覆盖自己那一处，页面写了不代表正文可以省。"
+why = "国内走 Gitee 时 Windows 访客只拿得到免安装版，它不替换也不卸载旧版；正文、下载页、README、docs/08 与 Gitee 发行版正文各覆盖自己那一处，页面写了不代表正文可以省；程序启动时的那条提示（#872）只在两个程序已经并存时出现，也不替代正文。"
 expires_if = "Gitee 也收 Windows 安装版、免安装版不再独占国内渠道时删。"
 
 [[rule]]
@@ -1069,3 +1119,19 @@ check = "none"
 status = "manual"
 why = "「按约定不跑」与「没跑成」共用一个台账时，结果页会把型号 / 版本不符、要机主手动进入的段算成失败并可重试，重跑还是同样跳过。跳过台账独立、不进 failed_steps 事件，退出码只看失败台账（#838、ADR-0029）。"
 expires_if = "结果页与退出码改由单独的结局字段表达、不再从台账推断时删。"
+
+[[rule]]
+id = "dev.recipes.no-local-preamble"
+source = "docs/04-给新机型写脚本.md#一段机型脚本长什么样"
+check = "test:test_recipe_preamble_migration::StructureTests.test_recipes_do_not_define_the_preamble"
+status = "enforced"
+why = "43 份脚本各抄一份段包装，已经分化成两代：锁屏时一代抛异常（记未完成），一代打印一句「后面的都不跑」就返回（退出码仍是 0，结果页显示成功）。#838 把前导收进引擎、#839 删掉 43 份本地副本；再留一份副本就会长出第三代，而且新写脚本的人不知道该抄哪一版。"
+expires_if = "不再按 exec 跑脚本（改成 import 一个自带前导的模块）时，这条与 docs/04 的那一段一起删。"
+
+[[rule]]
+id = "dev.deps.dependency-review"
+source = "CLAUDE.md#开发"
+check = "ci:dependency-review"
+status = "enforced"
+why = "仓库此前没有任何依赖安全检查：没有 dependabot.yml、没有依赖审查 workflow，Dependabot alerts 因要 admin 权限打不开（404），而本账号只有 write（#859）。依赖版本又是刻意钉死的（uiautomator2 在手机上被 u2.py 顶掉），版本更新型 PR 每张都要重新验真机，是纯噪音。所以改由 workflow 承担：PR 侧卡新增高危漏洞依赖、每周扫存量；两个 job 都只让问题可见，拦合并要分支保护。"
+expires_if = "开了 Dependabot（版本更新或安全更新），或依赖不再钉版、改由平台托管升级时删，两个 workflow 一起撤。"

@@ -3,22 +3,18 @@
 # 机型也靠这个前缀把这份脚本当同族参考（#319 / #483）。
 # 只关点名的广告与推荐；搜索数据源、服务通知与消息总开关保留，营销由 chan-scan / chan-off
 # 在渠道级处理。通知渠道、组件挂起和快应用继续走 run.py 的独立确认流程。
+# 2026-11-10 负一屏入口改从内侧右滑、已在负一屏不再滑走、认不到入口时留页面现场（#901），未复测。
 BUILD = "PMX110_17.0.0"
 # 用法：python3 tool/run.py -s 序列号 recipe [段名…]   不带段名=全跑
-import time
 from collections import namedtuple
 
 import adb_link
 from fast import ScreenLocked, bounds
 
 MenuState = namedtuple("MenuState", "close_all_disabled system_apps_shown")
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = globals().get("FAILED_STEPS") or []
 RESULTS = []
 SKIPPED_ITEMS = []
 VERIFIED_SWITCHES = 0
-HALTED = False
 
 SEARCH = "com.heytap.quicksearchbox"
 MARKET = "com.heytap.market"
@@ -43,44 +39,6 @@ STORE_PROMOS = [
 ]
 
 
-def require(ok, reason):
-    if not ok:
-        raise RuntimeError(reason)
-
-
-class SkipStep(RuntimeError):
-    pass
-
-
-def step(name):
-    def decorate(action):
-        global HALTED
-        if ONLY and name not in ONLY:
-            return action
-        print(f"\n== {name}", flush=True)
-        started = time.monotonic()
-        p.miss = 0
-        try:
-            if HALTED or p.locked():
-                raise ScreenLocked("手机锁屏或前段已停止，请机主解锁后重试")
-            action()
-            RESULTS.append((name, "completed"))
-        except adb_link.DeviceLost:
-            raise
-        except SkipStep as reason:
-            RESULTS.append((name, "skipped"))
-            print(f"  · 跳过：{reason}", flush=True)
-        except Exception as error:
-            if isinstance(error, ScreenLocked):
-                HALTED = True
-            FAILED_STEPS.append(name)
-            RESULTS.append((name, "incomplete"))
-            print(f"  ✗ 未完成：{error}", flush=True)
-        print(f"  ({time.monotonic() - started:.0f} 秒)", flush=True)
-        return action
-    return decorate
-
-
 def page(title, package=None, activity=None):
     # 等待由引擎负责；旧页面即使已稳定，也必须通过下面的落点与标题检查。
     p.await_page(budget=6)
@@ -91,7 +49,7 @@ def page(title, package=None, activity=None):
     if any(text in {"同意", "同意并继续", "同意并使用", "允许", "仅在使用中允许"}
            and "Button" in node.get("class", "") for text, _, node in p.texts()):
         p.dismiss()
-        raise SkipStep("出现协议或权限申请，不代为同意")
+        skip("出现协议或权限申请，不代为同意")
     if p.locked():
         raise ScreenLocked("手机锁屏，请机主解锁")
 
@@ -190,8 +148,7 @@ def close_named(names, title, max_screens=12, dependent=(), reopen=None, snapsho
     """
     global VERIFIED_SWITCHES
     before = read_switches(title, max_screens) if snapshot is None else snapshot
-    missing = [name for name in names if name not in before and name not in optional]
-    require(not missing, f"{title}：未识别全部目标开关，未操作")
+    require_switches(before, names, title, optional=optional)
     present = [name for name in names if name in before]
     absent = [name for name in names if name not in before]
     if absent:
@@ -218,10 +175,13 @@ def close_named(names, title, max_screens=12, dependent=(), reopen=None, snapsho
 
 
 def require_installed(package, label):
+    """没装的包 `pm path` 输出为空，退出码是 1（adb shell v2 带回）或 0（不带回退出码的通道）：
+    那是「没装」，跳过本段，不算读不出（#899）。有报错文字或别的退出码才算读不出。"""
     result = p.d.shell("pm path " + package)
-    require(not result.exit_code, f"无法读取{label}安装状态")
-    if "package:" not in result.output:
-        raise SkipStep(f"本机未安装{label}")
+    if "package:" in result.output:
+        return
+    require(result.exit_code in (0, 1) and not result.output.strip(), f"无法读取{label}安装状态")
+    skip(f"本机未安装{label}")
 
 
 def system_settings():
@@ -301,7 +261,7 @@ def _():
     # 以前逐行读整个列表（547 个具名项）两遍，约 27 分钟；现在不用滚动列表，个人应用名单也不必读出来。
     # 版本由引擎判（录制版本对不上会置 safe_mode）；这里只挡「拿这份脚本去跑别的型号」。
     if p.safe_mode or p.d.shell("getprop ro.product.model").output.strip() != "PMX110":
-        raise SkipStep("仅在 PMX110 上批量处理广告跟踪")
+        skip("仅在 PMX110 上批量处理广告跟踪")
     ad_id_page()
     row("广告跟踪", activity="OAIDActivity")
     state = menu_state()
@@ -418,20 +378,59 @@ def hide_carousel():
     VERIFIED_SWITCHES += 1
 
 
-@step("负一屏")
-def _():
-    p.d.shell("input keyevent HOME")
-    time.sleep(.6)
-    p.d.shell("input keyevent HOME")
-    for _ in range(3):
-        p.d.shell(f"input swipe 8 {p.H//2} {p.W*3//4} {p.H//2} 700")
-        p.await_page()
-        if any("head_icon" in n.get("resource-id", "") for n in p.tree().iter("node")):
-            break
+LAUNCHER = "com.android.launcher/"
+# 负一屏首页的两条已知文案（PLG110 / PMA110 实测）：头像入口万一改名，两条都在也算到了（#901）
+ASSISTANT_HOME = {"我的服务", "添加卡片"}
+
+
+def at_assistant():
+    """当前页是不是负一屏首页：先要求前台是桌面，再看头像入口或首页的两条已知文案。
+
+    负一屏内嵌在桌面进程里，焦点窗口不再是它自己的包名（PLR110 实测）；反过来，
+    它自己的包名对应的是负一屏设置页，那页不能当成「已经到了」。别的 App 上的同名
+    头像 / 文案同样不算，否则这一段会在错的应用里点下去（#901）。"""
+    if not p.focus().startswith(LAUNCHER):
+        return False
+    root = p.tree()
+    if any(n.get("resource-id", "").endswith("head_icon") for n in root.iter("node")):
+        return True
+    return ASSISTANT_HOME <= {t for t, _, _ in p.texts(root)}
+
+
+def assistant_icon():
+    """回默认桌面、从左侧内侧右滑进负一屏，返回唯一的头像入口。
+
+    ColorOS 最左一条是返回 / 侧边栏手势区，起点从 W//7 起、滑动 250 ms（同族 PLG110 实测）。
+    两次 HOME 回默认桌面：多主页时一次可能停在别的页；HOME 也可能正好落在负一屏，那就不再滑，
+    再滑一次会把自己划走（#901）。"""
+    if at_assistant():
+        p.await_page()                  # 已到也可能是刚划进来的过渡帧：等这一页画完再取坐标
+    else:
+        reached = False
+        for _ in range(2):
+            p.d.shell("input keyevent HOME")
+            p.await_page()
+            reached = at_assistant()
+            if reached:
+                break
+        if not reached:
+            for _ in range(4):
+                require(p.focus().startswith(LAUNCHER), "未停在系统桌面，请勿同时操作手机")
+                p.d.shell(f"input swipe {p.W//7} {p.H//2} {p.W*6//7} {p.H//2} 250")
+                p.await_page()
+                if at_assistant():
+                    break
     icons = [n for n in p.tree().iter("node") if n.get("resource-id", "").endswith("head_icon")
              and p.on_screen(n)]
+    if len(icons) != 1:
+        p.note_miss(f"唯一的负一屏头像入口（读到 {len(icons)} 个）")
     require(len(icons) == 1, "未确认负一屏头像入口")
-    l, t, r, b = bounds(icons[0])
+    return icons[0]
+
+
+@step("负一屏")
+def _():
+    l, t, r, b = bounds(assistant_icon())
     before = p.sig()
     p.click((l + r) // 2, (t + b) // 2)
     p.settle(before, 2.4)
@@ -504,5 +503,5 @@ def _():
     close_named(["资讯服务"], "资讯服务")
 
 
-print(f"\n逐项回读确认 {VERIFIED_SWITCHES} 项；完成 {sum(state == 'completed' for _, state in RESULTS)} 段，"
-      f"跳过 {sum(state == 'skipped' for _, state in RESULTS)} 段，未显示项 {len(SKIPPED_ITEMS)} 组", flush=True)
+print(f"\n逐项回读确认 {VERIFIED_SWITCHES} 项；完成 {sum(state == '完成' for _, state in RESULTS)} 段，"
+      f"跳过 {sum(state == '跳过' for _, state in RESULTS)} 段，未显示项 {len(SKIPPED_ITEMS)} 组", flush=True)

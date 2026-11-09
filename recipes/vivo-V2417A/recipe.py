@@ -2,39 +2,9 @@
 # 路径来自 2026-10-30 真机逐页操作；验证范围及复跑记录见同目录 README.md。
 BUILD = "PD2417D_A_16.2.14.1.W10"
 MODELS = ["V2417A"]
-import time
 
-import adb_link
 from wait import until
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
 VERIFIED_SWITCHES = 0
-
-
-def require(ok, reason):
-    if not ok:
-        raise RuntimeError(reason)
-
-
-def step(name):
-    def decorate(action):
-        if ONLY and name not in ONLY:
-            return action
-        print(f"\n== {name}", flush=True)
-        p.miss = 0
-        started = time.monotonic()
-        try:
-            require(not p.locked(), "手机锁屏了，请机主解锁后重试")
-            action()
-        except adb_link.DeviceLost:
-            raise
-        except Exception as error:
-            FAILED_STEPS.append(name)
-            print(f"  ✗ 未完成：{error}", flush=True)
-        print(f"  ({time.monotonic() - started:.0f} 秒)", flush=True)
-        return action
-    return decorate
 
 
 def tap(name, scrolls=4):
@@ -74,7 +44,7 @@ def verify(before, current, names, page):
 def close_named(names, page, max_screens=1):
     p.top(max_screens)
     before = read_switches(max_screens)
-    require(all(name in before for name in names), f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page)
     p.top(max_screens)
     # only 在引擎中是包含匹配；明确保留本页其余开关，回读再核对一次。
     p.off(only=names, keep=[name for name in before if name not in names],
@@ -88,7 +58,7 @@ def store_personalization():
     page = "商店·个性化推荐"
     names = ["个性化推荐", "个性化广告推荐"]
     before = read_switches()
-    require(all(name in before for name in names), f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page)
     for name in names:
         rows = [(state, xy) for title, state, xy in p.switches() if title_key(title) == name]
         require(len(rows) == 1, f"{page}：无法唯一识别「{name}」，未操作")

@@ -88,7 +88,7 @@ def select_rows(rows, pick_titles=()):
 # ---------- 生成草稿 ----------
 
 def step_name(pkg, page):
-    """@step("...") 里不能出现引号/反斜杠/换行：run.py recipe_meta 按这个字面格式解析步骤名。"""
+    """@step("...") 里不能出现引号/反斜杠/换行：recipe_meta 按这个字面格式解析步骤名。"""
     name = f"{pkg} · {page}"
     for bad in ('"', "\\", "\r", "\n"):
         name = name.replace(bad, "")
@@ -96,34 +96,9 @@ def step_name(pkg, page):
 
 
 DRAFT_HELPERS = '''
-import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
 VERIFIED_SWITCHES = 0        # 回读确认关闭的开关数
 MISSING_SWITCHES = []        # 没找到的开关（待人工确认）
 PENDING_SWITCHES = []        # 找到了但回读没确认关闭（待人工确认）
-
-
-def require(ok, reason):
-    if not ok:
-        raise RuntimeError(reason)
-
-
-def step(name):
-    def decorate(action):
-        if ONLY and name not in ONLY:
-            return action
-        print(f"\\n== {name}", flush=True)
-        p.miss = 0
-        try:
-            require(not p.locked(), "手机锁屏了，请机主解锁后再跑")
-            action()
-        except Exception as error:
-            FAILED_STEPS.append(name)
-            print(f"  ✗ 未完成：{error}", flush=True)
-        return action
-    return decorate
 
 
 def read_switches(max_screens):

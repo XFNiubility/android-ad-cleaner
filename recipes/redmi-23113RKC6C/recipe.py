@@ -7,39 +7,8 @@
 BUILD = "OS3.0.307.0"
 MODELS = ["23113RKC6C"]
 import time
-
-ONLY = globals().get("ONLY") or []
-FAILED_STEPS = []
+from entries import THEME_DEAD_ENDS
 VERIFIED_SWITCHES = 0
-
-
-def step(name):
-    def deco(f):
-        if ONLY and name not in ONLY:
-            return f
-        print(f"\n== {name}", flush=True)
-        p.miss = 0
-        t = time.time()
-        try:
-            if p.locked():
-                raise RuntimeError("手机锁屏了，请机主解锁后再跑")
-            f()
-        except Exception as e:
-            FAILED_STEPS.append(name)
-            print(f"  ✗ 未完成：{e}", flush=True)
-        print(f"  ({time.time()-t:.0f} 秒)", flush=True)
-        return f
-    return deco
-
-
-def require(ok, reason):
-    if not ok:
-        raise RuntimeError(reason)
-
-
-def maybe(name, scrolls=6):
-    """可选入口：有就点，没有不算「走丢」。"""
-    return p.entry(name, scrolls=scrolls)
 
 
 def tap_any(*names, scrolls=6):
@@ -122,8 +91,7 @@ def close_named(names, page, max_screens=2):
     p.top(max_screens)
     before = read_switches(max_screens)
     targets = [title for title in before if any(name in title for name in names)]
-    require(all(any(name in title for title in targets) for name in names),
-            f"{page}：未识别全部目标开关，未操作")
+    require_switches(before, names, page, contains=True)
     p.top(max_screens)
     p.off(only=names, page=page, max_screens=max_screens)
     p.top(max_screens)
@@ -197,7 +165,8 @@ def _():
         # 没有主题商店时直接起 thememanager：它没有 LAUNCHER activity，monkey 拉不起来（#730）
         if "package:" not in p.d.shell("pm path com.android.thememanager").output:
             print("  · 本机没有主题商店，跳过"); return
-        p.start("com.android.thememanager", ".ThemeResourceProxyTabActivity")
+        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                      dead_ends=THEME_DEAD_ENDS, reason="没有主题商店，主题页打不开")
     p.go("我的", "设置")
     gear()
     p.off(only=["每次联网时通知"], keep=["自动更新"], page="主题·设置")
