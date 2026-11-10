@@ -4,7 +4,7 @@ import sys
 import tempfile
 import unittest
 from pathlib import Path
-from urllib.parse import parse_qs, urlsplit
+from urllib.parse import parse_qs, unquote, urlsplit
 
 ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "android" / "app" / "src" / "main" / "python"))
@@ -40,11 +40,13 @@ def status(**over):
 
 class SummarizeTest(unittest.TestCase):
     def test_shared_cases_with_web_client(self):
-        """tests/summary_cases.json 是两处 summarize() 的共同口径：网页版用例断言同一批串。"""
+        """tests/summary_cases.json 是两处 summarize() 的共同口径：网页版用例断言同一批串，
+        `machine` 里的机器行接在 tail 末尾一起喂（#1002）。"""
         cases = json.loads((ROOT / "tests" / "summary_cases.json").read_text(encoding="utf-8"))
         for case in cases:
             with self.subTest(case=case["name"]):
-                self.assertEqual(view.summarize({"tail": case["tail"]}), case["want"])
+                tail = list(case["tail"]) + list(case.get("machine", []))
+                self.assertEqual(view.summarize({"tail": tail}), case["want"])
 
     def test_known_lines(self):
         cases = [(["机型脚本跑完：关了 12 个，34 秒"], "关了 12 个开关"),
@@ -181,6 +183,24 @@ class DetectTest(unittest.TestCase):
         self.assertEqual(d["manual_name"], "OPPO / ColorOS")
         self.assertIn("OPPO-ColorOS.md", d["manual_url"])
 
+    def test_samsung_huawei_meizu_land_on_their_own_checklist(self):
+        """没有专用脚本时，这三家的按钮要落到自己那份清单并写上品牌名（#952）。"""
+        want = {"samsung": ("三星 / One UI", "三星-OneUI.md"),
+                "huawei": ("华为 / HarmonyOS", "华为-HarmonyOS.md"),
+                "meizu": ("魅族 / Flyme", "魅族-Flyme.md")}
+        for brand, (name, filename) in want.items():
+            with self.subTest(brand=brand):
+                d = self.detect(steps=[], recipe=None, info={"brand": brand})
+                self.assertEqual(d["manual_name"], name)
+                self.assertEqual(unquote(d["manual_url"]), f"{view.REPO}/blob/main/docs/清单/{filename}")
+
+    def test_every_checklist_entry_has_a_name_and_a_file(self):
+        """旧树也绿，守的是表里每一项都有名字、对应文件也真在仓库里，不回退。"""
+        for filename in view.CHECKLIST.values():
+            with self.subTest(filename=filename):
+                self.assertTrue(view.CHECKLIST_NAME.get(filename))
+                self.assertTrue((ROOT / "docs" / "清单" / filename).is_file())
+
     def test_reference_recipe_runs_in_safe_mode(self):
         d = self.detect(recipe="oppo/PX9", recipe_ref=True, recipe_ok=False)
         self.assertTrue(d["ref"])
@@ -201,7 +221,7 @@ class DetectTest(unittest.TestCase):
         self.assertIn("保留", d["quickapp_note"])
         self.assertIn("hap://", d["quickapp_note"])
         self.assertIn("vivo 优先使用快应用服务开关", d["quickapp_note"])
-        self.assertEqual(d["ads"], [{"pkg": "com.opos.ads", "name": "OPPO 广告服务"}])
+        self.assertEqual(d["ads"], [{"pkg": "com.opos.ads", "name": "OPPO 广告服务", "default_on": False}])
         d = self.detect(quickapps=[{"name": "A", "closed": True}], ads=[{"pkg": "x", "suspended": True}])
         self.assertEqual((d["quickapp_state"], d["ads_state"]), ("已关闭", "已挂起"))
         d = self.detect(quickapps=[{"name": "A", "closed": True}, {"name": "C", "keep": True}])
@@ -212,6 +232,13 @@ class DetectTest(unittest.TestCase):
     def test_xiaomi_ad_component_says_partial_success_is_reported(self):
         d = self.detect(ads=[{"pkg": "com.miui.systemAdSolution"}])
         self.assertIn("会报告部分完成", d["ads"][0]["name"])
+
+    def test_default_mark_reaches_the_phone_selection_page(self):
+        """#973：预勾与否由 status-json 的 default_on 给，手机版只透传，不在 Kotlin 里再判一次。"""
+        d = self.detect(ads=[{"pkg": "com.miui.systemAdSolution", "default_on": True},
+                             {"pkg": "com.opos.ads", "default_on": False}])
+        self.assertEqual([(a["pkg"], a["default_on"]) for a in d["ads"]],
+                         [("com.miui.systemAdSolution", True), ("com.opos.ads", False)])
 
 
 class BrandGuideTest(unittest.TestCase):

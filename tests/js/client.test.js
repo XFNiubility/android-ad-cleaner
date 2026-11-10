@@ -97,6 +97,23 @@ test("机型脚本摘要说清三类结局，与手机版逐字一致（#758）"
   } finally { page.close(); }
 });
 
+/* 机器行（tool/events.py 的 `#aac:event ` / `#aac:payload `）只在客户端设了 AAC_EVENTS 时出现，
+   正常走不到 results[].tail；但只要有一处漏进来，兜底那句就会把它原样显示给用户（#1002）。
+   与 tests/test_rules_guards.py 的 EngineGuards 读同一份样例。 */
+test("完成页摘要把机器行挡在外面（#1002）", async () => {
+  const page = await openPage();
+  try {
+    for (const c of SUMMARY_CASES){
+      const tail = [...c.tail, ...(c.machine || [])];
+      const got = page.window.summarize({ tail });
+      assert.equal(got, c.want, c.name);
+      assert.ok(!got.split("\n").some(line => line.startsWith("#aac:")), `${c.name}：摘要里漏出了机器行`);
+    }
+    const machine = ["#aac:event {\"kind\": \"ui_busy\"}", "#aac:payload {\"skeleton\": \"<node>\"}"];
+    assert.equal(page.window.summarize({ tail: ["开始执行", ...machine] }), "开始执行");
+  } finally { page.close(); }
+});
+
 test("完成页摘要认不出模式时显示最后一条非空行", async () => {
   const page = await openPage();
   try {
@@ -261,4 +278,129 @@ test("没有可重试的步时结果页不给按钮（#638）", async () => {
       .find(b => b.textContent.includes("重试没成功的步骤"));
     assert.equal(button, undefined);
   } finally { page.close(); }
+});
+
+test("没标录制版本的机型脚本不说「版本一致」（#942）", async () => {
+  const status = {
+    info: { model: "25060RK16C", brand: "Redmi", name: "REDMI K80 Ultra", os: "",
+            build: "BP2A.250605.031.A3", android: "16" },
+    recipe: "recipes/redmi-25060RK16C/recipe.py", recipe_ref: false,
+    recipe_build: "", recipe_ok: true, steps: ["系统广告"],
+    ads: [], quickapps: [], locked: false, dev: false, backup: null,
+    fold_open: false, input_blocked: false, stay_on: "",
+  };
+  const page = await openPage({ api: { status: () => status } });
+  try {
+    page.window.eval("S.serial = 'X'");
+    await page.window.showDetect();
+    const kv = [...page.document.querySelectorAll(".kv")]
+      .find(n => n.textContent.includes("机型脚本"));
+    assert.match(kv.textContent, /录制版本未标/);
+    assert.doesNotMatch(kv.textContent, /版本一致/);
+  } finally { page.close(); }
+});
+
+/* #973：选择页「挂起广告组件」的默认值来自 status-json 的 default_on ——
+   小米 msa 预先勾上，其他品牌不勾，已挂起的项根本不出勾选框（走「已经挂起」那句）。 */
+function chooseStatus(ads, over = {}) {
+  return {
+    info: { model: "2510DRK44C", brand: "Redmi", name: "REDMI K90", os: "OS4.0.5.0", build: "", android: "17" },
+    recipe: "xiaomi-M154FF/recipe.py", recipe_ref: false, recipe_ok: true, recipe_build: "OS4.0",
+    steps: ["主题"], ads, quickapps: [], locked: false, dev: false, backup: null,
+    fold_open: false, input_blocked: false, stay_on: "",
+    ...over,
+  };
+}
+
+async function openChoose(ads, over = {}) {
+  const status = chooseStatus(ads, over);
+  const page = await openPage({ api: { status: () => status, chan_scan: () => ({ chans: [], notes: [] }) } });
+  page.window.eval(`S.serial = "X"; S.status = ${JSON.stringify(status)}; S.chans = []; S.chanNotes = [];`);
+  await page.window.showChoose();
+  return page;
+}
+
+test("选择页：default_on 的广告包预先勾上（#973）", async () => {
+  const page = await openChoose([{ pkg: "com.miui.systemAdSolution", suspended: false, default_on: true }]);
+  try {
+    const boxes = [...page.document.querySelectorAll(".c-ad")];
+    assert.deepEqual(boxes.map(b => [b.value, b.checked]), [["com.miui.systemAdSolution", true]]);
+  } finally { page.close(); }
+});
+
+test("选择页：非默认广告包不勾，已挂起的 msa 不出勾选框（#973）", async () => {
+  const page = await openChoose([
+    { pkg: "com.opos.ads", suspended: false, default_on: false },              // 非小米：不预勾
+    { pkg: "com.miui.systemAdSolution", suspended: true, default_on: false },  // 小米已挂起：不出勾选框
+  ]);
+  try {
+    const boxes = [...page.document.querySelectorAll(".c-ad")];
+    assert.deepEqual(boxes.map(b => [b.value, b.checked]), [["com.opos.ads", false]]);
+    assert.match(page.document.querySelector("#main").textContent, /挂起只是暂停运行/);
+  } finally { page.close(); }
+});
+
+test("选择页：取消预勾后开始，计划里不含挂起（#973）", async () => {
+  const started = [];
+  const status = chooseStatus([{ pkg: "com.miui.systemAdSolution", suspended: false, default_on: true }]);
+  const page = await openPage({ api: {
+    status: () => status, chan_scan: () => ({ chans: [], notes: [] }),
+    start: (serial, plan) => { started.push(plan); return { ok: true, total: 1 }; },
+    poll: () => pollResult(),
+  } });
+  try {
+    page.window.eval(`S.serial = "X"; S.status = ${JSON.stringify(status)}; S.chans = []; S.chanNotes = [];`);
+    await page.window.showChoose();
+    page.document.querySelector(".c-ad").checked = false;
+    await page.window.go();
+    assert.deepEqual(Array.from(started[0].ads), []);
+  } finally {
+    page.window.eval("clearInterval(pollJob); pollJob = null");
+    page.close();
+  }
+});
+
+test("选择页：直接开始就把 msa 排进计划（#973）", async () => {
+  const started = [];
+  const status = chooseStatus([{ pkg: "com.miui.systemAdSolution", suspended: false, default_on: true }]);
+  const page = await openPage({ api: {
+    status: () => status, chan_scan: () => ({ chans: [], notes: [] }),
+    start: (serial, plan) => { started.push(plan); return { ok: true, total: 1 }; },
+    poll: () => pollResult(),
+  } });
+  try {
+    page.window.eval(`S.serial = "X"; S.status = ${JSON.stringify(status)}; S.chans = []; S.chanNotes = [];`);
+    await page.window.showChoose();
+    await page.window.go();
+    assert.deepEqual(Array.from(started[0].ads), ["com.miui.systemAdSolution"]);   // 跨 realm 的数组要先摊成 Node 的
+  } finally {
+    page.window.eval("clearInterval(pollJob); pollJob = null");
+    page.close();
+  }
+});
+
+test("没有机型脚本时，桌面版手动清单认三星、华为、魅族（#952）", async () => {
+  const urls = [];
+  const cases = [["samsung", "三星 / One UI ", "三星-OneUI.md"],
+                 ["huawei", "华为 / HarmonyOS ", "华为-HarmonyOS.md"],
+                 ["meizu", "魅族 / Flyme ", "魅族-Flyme.md"]];
+  for (const [brand, label, file] of cases) {
+    const status = {
+      info: { model: "X", brand, name: "Phone", os: "16", build: "", android: "16" },
+      recipe: null, recipe_ref: false, recipe_ok: false, recipe_build: "",
+      steps: [], ads: [], quickapps: [], locked: false, dev: false, backup: null,
+      fold_open: false, input_blocked: false, stay_on: "",
+    };
+    const page = await openPage({ api: { status: () => status, open_url: url => urls.push(url) } });
+    try {
+      page.window.eval("S.serial = 'X'");
+      await page.window.showDetect();
+      const link = [...page.document.querySelectorAll("#main a")]
+        .find(a => a.textContent.includes("手动清单"));
+      assert.equal(link.textContent, `${label}手动清单`);
+      link.dispatchEvent(new page.window.MouseEvent("click", { bubbles: true, cancelable: true }));
+      assert.equal(urls.pop(), "https://github.com/rddmwmddr/android-ad-cleaner/blob/main/docs/"
+        + encodeURIComponent("清单") + "/" + encodeURIComponent(file));
+    } finally { page.close(); }
+  }
 });

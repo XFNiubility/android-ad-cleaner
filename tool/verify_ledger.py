@@ -24,6 +24,7 @@ from datetime import date
 
 from commits import git
 from recipe_meta import recipe_files, recipe_meta
+from stdio import use_utf8_console
 
 TIERS = ("已验证", "部分验证", "未记录")
 UNRECORDED = TIERS[-1]
@@ -128,7 +129,7 @@ def _bucket(days):
 
 
 def _footer(ledger_rows):
-    parts = " · ".join(f"{name} {n}" for name, n in zip(BUCKETS, distribution(ledger_rows)))
+    parts = " · ".join(f"{name} {n}" for name, n in zip(BUCKETS, distribution(ledger_rows), strict=True))    # 两边都恒为 3 档
     return f"{parts}（共 {len(ledger_rows)} 份）"
 
 
@@ -172,11 +173,7 @@ def _recipes_dir():
 
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    use_utf8_console()
     _dir = _recipes_dir()
     sys.stdout.write(render(_dir, load(os.path.join(_dir, "verified.toml")), date.today(),
                             changed_dates(_dir), declared_builds(_dir)))

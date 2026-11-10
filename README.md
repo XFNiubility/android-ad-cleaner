@@ -106,6 +106,7 @@ https://t.me/+A5X3Mxzs-Cg3NjYx
 | 荣耀 | Magic V Flip2（CLE-AN00） | MagicOS 10.0.0.175<br>Android 16 | ✅ 11-07 | ✅ | ✅ 3 |
 | 一加 | 15T（PLZ110） | ColorOS 17.0.0.107<br>Android 17 | ⚠️ 11-08 | 部分 | ✅ |
 | 一加 | Ace 2 Pro（PJA110） | ColorOS 14.0.0.812<br>Android 14 | ⚠️ | 部分 | ✅ 23 |
+| 一加 | Ace 2 Pro（PJA110） | ColorOS 16.0.5.1201<br>Android 16 | ⚠️ | 部分 | — |
 | 一加 | 13T（PKX110） | ColorOS 16.0.10.500<br>Android 16 | ✅ 10-28 | ✅ | ✅ 17 |
 | 一加 | Ace 6T（PLR110） | ColorOS 17.0.0.101<br>Android 17 | ✅ 10-31 | ✅ | — |
 | OPPO | Find N6（PLP120） | ColorOS 16.0.9 | ⚠️ | ✅ | ✅ 30 |
@@ -127,6 +128,7 @@ https://t.me/+A5X3Mxzs-Cg3NjYx
 | 小米 | 15（24129PN74C） | HyperOS OS3.0.307.0.WOCCNXM<br>Android 16 | ⚠️ 10-29 | ✅ | ✅ 17 |
 | 小米 | REDMI K90 Pro Max（25102RKBEC） | HyperOS OS4.0.2.0.XPMCNXM<br>Android 17 | ✅ 10-27 | ✅ | ✅ 26 |
 | 小米 | REDMI K90 Ultra（M332BF） | HyperOS OS4.0.4.0.XHPCNXM<br>Android 17 | ⚠️ 10-31 | ✅ | ✅ 19 |
+| 小米 | REDMI K90（2510DRK44C） | HyperOS OS4.0.5.0.XPKCNXM<br>Android 17 | ⚠️ 11-10 | ✅ | ✅ 8 |
 | 小米 | MIX Flip 2（2505APX7BC） | HyperOS<br>Android 16 | ⚠️ 11-05 | ✅ | ✅ 22 |
 | 小米 | REDMI K80 Pro（24122RKC7C） | HyperOS OS3.0.304.0.WOMCNXM<br>Android 16 | ✅ 10-29 | ✅ | ✅ 48 |
 | 小米 | Redmi Note 14 Pro（24090RA29C） | HyperOS 3.0.309.0<br>Android 16 | ✅ 10-26 | ✅ | ✅ 11 |
@@ -168,6 +170,7 @@ https://t.me/+A5X3Mxzs-Cg3NjYx
 - **荣耀 Magic V Flip2（CLE-AN00）**：2026-11-07 电脑整轮 325 秒、13 段 12 段完成（主题未同意协议跳过）；手机版 2 分 20 秒，负一屏在后台屏上进不去，也跳过。营销通知关 3 个渠道，复查仍开着 0 个。
 - **一加 15T（PLZ110）**：2026-11-08 贡献者真机七段分段核对；专用脚本整轮未验证，商店标题匹配待 #861。手动清单只覆盖部分，见清单。营销通知本轮人工确认清单，其他渠道及总开关未变。
 - **一加 Ace 2 Pro（PJA110）**：源码新增 3 项个性化 + 6 项商店推广位关闭并回读，没有真机整轮记录。手动清单部分，见实测记录。营销通知关闭 23 个，总开关不变；天气提醒差异见实测。
+- **一加 Ace 2 Pro（PJA110，ColorOS 16）**：脚本入口照同代系统（ColorOS 16）在一加 Ace 2 与 OPPO 机型上已实测的路径改写，本机未跑过、等复测；差异见[清单](docs/清单/OPPO-ColorOS.md)。营销通知未测。
 - **一加 13T（PKX110）**：2026-10-28 实测：广告跟踪 76 项、商店两段、小布建议；浏览器/下拉搜索/负一屏见清单差异。营销通知 17 个渠道。
 - **一加 Ace 6T（PLR110）**：2026-10-31 贡献者真机九段全跑 224 秒；本仓库无该机型，未复测，见[清单差异](docs/清单/OPPO-ColorOS.md)。营销通知未测。
 - **OPPO Find N6（PLP120）**：路径实测，整段待验证。营销通知 30 个渠道。
@@ -189,6 +192,7 @@ https://t.me/+A5X3Mxzs-Cg3NjYx
 - **小米 15（24129PN74C）· HyperOS OS3.0.307.0.WOCCNXM**：10-29 路径逐项实测、开关已实际关闭；新脚本整轮待复测、用时未测，底包同 K80 但浏览器/商店入口不同。营销通知 17 个渠道，全部关闭。
 - **小米 REDMI K90 Pro Max（25102RKBEC）**：10-27 九段实测通过，重跑 169 秒。营销通知 26 个渠道。
 - **小米 REDMI K90 Ultra（M332BF）**：10-31 社区实测，@Sin1ery 本机九段跑通、复跑 179 秒、0 调整；按他的实测规格重写、本仓库未复跑，待其复测，见[实测记录](docs/16-红米K90至尊实测.md)。手动清单见[清单](docs/清单/小米-HyperOS.md)。营销通知 19 个渠道（21 候选，剔除 2 条服务类）。
+- **小米 REDMI K90（2510DRK44C）**：11-10 社区实测（[Issue #929](https://github.com/rddmwmddr/android-ad-cleaner/issues/929)）：借 18 Pro Max 脚本跑通九段中的八段、关 16 项；挂起 `com.miui.systemAdSolution` 后主题段补关 2 项，累计 18 项。已按本型号登记进 `recipes/xiaomi-M154FF`，本仓库未在该机复跑。手动清单见[清单](docs/清单/小米-HyperOS.md)。营销通知 8 个第三方渠道全部关闭并回读确认（系统 App 的 msa 营销渠道是系统锁定、不可关闭）。
 - **小米 MIX Flip 2（2505APX7BC）**：底包 BP2A.250605.031.A3；11-05 社区实测（合盖外屏）：该机借同底包参考脚本跑通六段，主题 / 浏览器 / 天气 / 日历四处入口不同；专用脚本按该机实测路径写成、本仓库未复跑、用时未测，待其复测，见[说明](recipes/xiaomi-2505APX7BC/README.md)。手动清单见[清单](docs/清单/小米-HyperOS.md)。营销通知关闭 22 个渠道，复查仍开着 0 个。
 - **小米 REDMI K80 Pro（24122RKC7C）**：10-29 九段实测，首轮关 20 项，复跑 172 秒；[实测记录](docs/15-红米K80Pro实测.md)。营销通知 48 个渠道（54 候选）。
 - **小米 Redmi Note 14 Pro（24090RA29C）**：10-26 八段实测通过，整轮约 5 分钟。营销通知 11 个渠道。
@@ -226,6 +230,7 @@ pip3 install -r requirements.txt
 python3 tool/run.py devices                 # 看序列号、型号、有没有机型脚本
 python3 tool/run.py -s <序列号> check        # 只读检查
 python3 tool/run.py -s <序列号> backup       # 改动前快照
+python3 tool/run.py -s <序列号> suspend <包…> # 可选：机主同意后挂起广告组件，要排在跑机型脚本之前
 python3 tool/run.py -s <序列号> recipe       # 跑机型脚本
 python3 tool/run.py -s <序列号> chan-scan    # 列营销通知渠道
 python3 tool/run.py -s <序列号> chan-off backups/<型号>-<时间>/channels.tsv

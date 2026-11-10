@@ -2,7 +2,7 @@
 # 适配机型：Redmi Note 12 Turbo（23049RAD8C）
 # 路径来源：2026-10-25 实测（OS3.0.5.0.VMRCNXM，Android 15）
 # 用法：python3 tool/run.py -s 序列号 recipe [段名…]   不带段名=全跑
-BUILD = "OS3.0"
+BUILD = "OS3.0.5.0"
 MODELS = ["23049RAD8C"]
 import time
 from entries import THEME_DEAD_ENDS
@@ -59,6 +59,8 @@ def _():
     # 直达设置页，避免从首页弹窗或“我的”页面图标迷路
     try:
         p.start("com.xiaomi.market", "com.xiaomi.market.ui.MarketPreferenceActivity")
+    except SkipStep:
+        raise                     # App 本机没装：放行，由段包装记跳过，别退到「我的 → 设置」再空跑（#908）
     except Exception:
         p.start("com.xiaomi.market")
         p.go("我的", "设置")
@@ -99,16 +101,27 @@ def _():
 
 @step("主题")
 def _():
-    if "package:" in p.d.shell("pm path com.miui.themestore").output:
-        p.start("com.miui.themestore", foreground="com.android.thememanager")
-    else:
-        # 没有主题商店时直接起 thememanager：它没有 LAUNCHER activity，monkey 拉不起来（#730）
-        if "package:" not in p.d.shell("pm path com.android.thememanager").output:
-            print("  · 本机没有主题商店，跳过"); return
-        start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
-                      dead_ends=THEME_DEAD_ENDS, reason="没有主题商店，主题页打不开")
-    p.go("我的", "设置")
-    gear()
+    # 直达主题管理包的代理页（沿用 #730 的做法：它没有 LAUNCHER，monkey 拉不起来）；经主题商店冷启动
+    # 要过一道重定向过渡窗，前台校验容易误判，也可能续在上次留下的子页上（#906）。
+    # 落点被系统转去商店详情页或桌面时仍按跳过收尾。
+    if "package:" not in p.d.shell("pm path com.android.thememanager").output:
+        print("  · 本机没有主题管理包，跳过"); return
+    start_or_skip("com.android.thememanager", ".ThemeResourceProxyTabActivity",
+                  dead_ends=THEME_DEAD_ENDS, reason="主题页打不开")
+    # 导航失败以前与「本页没有目标开关」同形：进「我的」、进设置页、点名开关三步都校验，
+    # 0 个开关按失败报并带页面现场（#906）。
+    if not p.go("我的", "设置"):
+        raise RuntimeError("未进入主题「我的」；" + p.page_evidence())
+    if not gear():
+        raise RuntimeError("主题设置入口没找到；" + p.page_evidence())
+    p.await_page()                              # 齿轮点完这一页可能还没画完
+    before = {}
+    for _ in range(2):                          # 行也可能在首屏之下，off() 自己会翻页找
+        before.update({title: on for title, on, _ in p.switches()})
+        if not p.scroll_more():
+            break
+    p.top(2)
+    require_switches(before, ["每次联网时通知"], "主题·设置", contains=True)
     p.off(only=["每次联网时通知"], keep=["自动更新"], page="主题·设置")
     if maybe("隐私设置"):
         p.off(only=["个性化推荐"], page="主题·隐私"); p.back()
@@ -176,6 +189,8 @@ def _():
         p.start("com.android.calendar", ".settings.UserExperienceActionBarActivity")
         p.off(only=["推荐", "广告", "个性化", "内容推广"], page="日历·用户体验计划")
         p.back(2)
+    except SkipStep:
+        raise                     # App 本机没装：放行，由段包装记跳过（#908）
     except Exception:
         p.start("com.android.calendar")
         gear()

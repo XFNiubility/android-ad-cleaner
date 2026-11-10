@@ -13,11 +13,9 @@
 """
 import os, re, shlex, sys, time, unicodedata, xml.etree.ElementTree as ET
 from dataclasses import dataclass
-for _st in (sys.stdout, sys.stderr):
-    try:
-        _st.reconfigure(encoding="utf-8", errors="replace")   # Windows 控制台默认不是 UTF-8
-    except Exception:
-        pass
+from stdio import use_utf8_console
+
+use_utf8_console()
 import adbutils
 import uiautomator2 as u2
 from ui_session import connect
@@ -52,6 +50,9 @@ CONFIRM = ("确定", "確定", "关闭", "關閉", "仍要关闭", "仍要關閉
 CONFIRM_WAIT = 1.0
 CONFIRM_SETTLE = 0.2
 PERMISSION_CONTROLLERS = {"com.android.permissioncontroller", "com.google.android.permissioncontroller"}
+# 设置页的焦点窗口签名：同一批小米 / OPPO App 里两种命名并存，只认 Setting 会把
+# ThemePreferenceActivity、BrowserPreferencesPage 这类判成「没进去」（#960）。
+SETTINGS_MARKS = ("Setting", "Preference")
 # 拉起后等目标 App 到前台：只有「确知不是它」的时间计入预算，空焦点是窗口还没画出来，不计（#581）。
 LAUNCH_WAIT = 5
 # 冷启动过渡能把启动等待顺延到的挂钟上限：与下面「启动后 8 秒仍读不到页面」同一个界，空焦点不能无限等。
@@ -288,6 +289,15 @@ def _shell_transport(shell):
     return send
 
 
+def reader_failure(serial, error):
+    """读屏连不上、或连上后的第一次读屏失败：屏没了与读屏服务坏了是两回事，两处共用这一份翻译（#928）。"""
+    if adb_link.screen_gone(error):     # 屏已经没了不是读屏服务坏了：别把用户指去关别的客户端（#674）
+        return RuntimeError(f"{adb_link.SCREEN_GONE_CONNECT}\n原始异常：{type(error).__name__}: {error}")
+    return RuntimeError("手机读屏服务（UiAutomation）启动失败，本次未点击开关。"
+                        f"\n{accessibility_summary(serial)}\n{UI_RECOVERY}\n"
+                        f"原始异常：{type(error).__name__}: {error}")
+
+
 class Phone:
     def __init__(self, serial, log=True, reader: Reader | None = None):
         if log:
@@ -302,11 +312,7 @@ class Phone:
                                f"{accessibility_summary(serial)}\n{UI_RECOVERY}\n"
                                f"原始异常：{type(e).__name__}: {e}") from e
         except u2.exceptions.UiAutomationError as e:
-            if "后台屏" in str(e):      # 屏已经没了不是读屏服务坏了：别把用户指去关别的客户端（#674）
-                raise RuntimeError(f"后台执行用的那块屏已经关了，本次未点击开关。请重试一次。\n原始异常：{type(e).__name__}: {e}") from e
-            raise RuntimeError("手机读屏服务（UiAutomation）启动失败，本次未点击开关。"
-                               f"\n{accessibility_summary(serial)}\n{UI_RECOVERY}\n"
-                               f"原始异常：{type(e).__name__}: {e}") from e
+            raise reader_failure(serial, e) from e
         except (u2.exceptions.AdbShellError, adbutils.AdbError) as e:
             # 读屏服务文件传不进手机（adb push 返回 FAIL）或命令无回应：多半是连接中途断了（错误日志 10-27）。
             if not adb_link.present(serial):
@@ -321,6 +327,15 @@ class Phone:
             # 小米没开「USB 调试（安全设置）」时能读不能点：先探一下，别跑几分钟全是「没找到」。
             if input_blocked(self.reader.shell("input keyevent 0").output):
                 raise RuntimeError(f"INPUT_BLOCKED：系统拒绝了{TAPPED}，本次未点击开关。\n" + XIAOMI_INPUT)
+        except u2.exceptions.UiAutomationError as e:
+            self.reader.close()
+            lost = adb_link.lost_from(e, serial)    # 命令服务断开这一族仍是断线（#731），别包成读屏服务起不来
+            if lost is not None:
+                raise lost from e
+            slow = adb_link.read_failed(e)          # 读屏慢一次只是这一步没成（#731）
+            if slow:
+                raise RuntimeError(slow) from e
+            raise reader_failure(serial, e) from e
         except BaseException:
             self.reader.close()
             raise
@@ -621,7 +636,11 @@ class Phone:
 
     def dismiss(self):
         """挡路的更新/推荐/权限弹窗：点拒绝类按钮（不替用户同意任何东西）。
-        纯图片的广告弹窗没有文字，只有一个 ✕ 图标：找 desc/id 里带 close 的可点元素。"""
+        纯图片的广告弹窗没有文字，只有一个 ✕ 图标：找 desc/id 里带 close 的可点元素。
+        返回非空表示这次关掉了东西，返回前已经等过界面过渡（0.4~0.6 秒），调用方不必再等；
+        返回 None 表示这次没关掉任何东西（推广位的 ✕ 点过也已退回原 App），
+        调用方按自己的节奏等待或重试。轮询处写成 `if not self.dismiss(): time.sleep(x)`：
+        刚关掉就立刻重读，什么都没关才按间隔再读。"""
         root = self.tree()
         # Android 运行时权限页只点明确的拒绝按钮，不替用户授予权限或修改“不再询问”。
         if (any(n.get("package") in PERMISSION_CONTROLLERS for n in root.iter("node"))
@@ -728,7 +747,8 @@ class Phone:
                     if seen is not None:
                         seen.append(b)
                     return True
-                self.dismiss() or time.sleep(0.2)
+                if not self.dismiss():
+                    time.sleep(0.2)
             if not quiet:
                 self.say(f"  ✗ 没找到「{text}」" + self.residual_note())
             return False
@@ -772,9 +792,9 @@ class Phone:
         return False
 
     def in_settings_page(self):
-        """当前页是某个 App 的设置页（类名含 Setting）。点完齿轮用它确认真的进去了：
-        点击被吞时页面没换，接着在旧页上找入口会整段失败（#331）。"""
-        return "Setting" in self.focus()
+        """当前页是某个 App 的设置页（焦点类名含 SETTINGS_MARKS 里的任一签名）。点完齿轮用它
+        确认真的进去了：点击被吞时页面没换，接着在旧页上找入口会整段失败（#331）。"""
+        return any(mark in self.focus() for mark in SETTINGS_MARKS)
 
     def await_page(self, budget=2.4, poll=0.2, stable=0.15, changed_from=wait.UNSET):
         """等当前页面站稳：读不到文字、或文字还在变时继续等；预算耗尽就照常往下判定。
@@ -830,7 +850,7 @@ class Phone:
     def icon_candidates(self, area=(0.72, 0.0, 1.0, 0.16)):
         """没有文字、点了才知道去哪的图标（右上角齿轮、更多）：按位置从右往左给候选坐标。
         整块卡片/列表项点了会进别的页面，按尺寸排除掉。"""
-        x0, y0, x1, y1 = (v * s for v, s in zip(area, (self.W, self.H, self.W, self.H)))
+        x0, y0, x1, y1 = (v * s for v, s in zip(area, (self.W, self.H, self.W, self.H), strict=True))    # area 是 (x0,y0,x1,y1)
         out = []
         for n in self.tree().iter("node"):
             if n.get("clickable") != "true":
@@ -897,7 +917,8 @@ class Phone:
             for _ in range(5):
                 if self.find(expect) or self.find(expect, edge_ok="tab"):
                     return True
-                self.dismiss() or time.sleep(0.3)
+                if not self.dismiss():
+                    time.sleep(0.3)
         self.say(f"  ✗ 点「{text}」后没出现「{expect}」" + self.residual_note())
         return False
 
@@ -919,7 +940,8 @@ class Phone:
             if time.time() >= deadline:
                 self.say(f"  ✗ 底部没有「{name}」标签")
                 return False
-            self.dismiss() or time.sleep(0.2)
+            if not self.dismiss():
+                time.sleep(0.2)
 
     def _tab_xy(self, name):
         """底部带内按三层递进找标签，返回点击坐标或 None。"""
@@ -1097,9 +1119,9 @@ class Phone:
                         if not stayed:
                             stayed.append(self.focus() == start)
                         return stayed[0]
-                    return readback(targets, rows, clicked=clicked, others=others,
+                    return readback(targets, rows, clicked=clicked, others=others,  # noqa: B023 - 本屏的 targets / clicked / others 当轮创建，read_page 同步调用
                                     page_same=page_same,
-                                    disabled=lambda xy: disabled_at(root, xy)), root
+                                    disabled=lambda xy: disabled_at(root, xy)), root  # noqa: B023 - lambda 的 xy 是形参，root 是本屏读到的树
 
                 def retry(still):
                     # 只重试当前仍能识别的开关，不能在节点消失后沿用旧坐标；灰掉的点了也不会变。
@@ -1111,18 +1133,18 @@ class Phone:
                                                         # here 为空只是这一次没读到前台，不拦补点
                     root = self.tree()
                     rows = self.switches(root)
-                    for t, xy in pick_retry_rows(targets, rows, still,
+                    for t, xy in pick_retry_rows(targets, rows, still,  # noqa: B023 - targets 当轮创建，pick_retry_rows 同步调用
                                                  lambda xy: disabled_at(root, xy)):
                         self.click(*xy); self.confirm()
-                        clicked.add(t)                  # 补点也算点过：行随后消失同样是随行消失（#486）
+                        clicked.add(t)                  # 补点也算点过：行随后消失同样是随行消失（沿用 #486）  # noqa: B023 - clicked 当轮创建
 
                 def retry_titles(still, root):
                     # 开关本体点了不动、只认行标题的页面（Google 广告设置页，#608）：改点这一行的标题。
                     # 每点一次都按新树重取坐标：点掉一行会让下面的行整体上移，旧坐标会落到邻行（#480 同一口子）。
                     done_here, pending = False, set(still)
                     while pending:
-                        picked = pick_title_rows(targets, self.switch_rows(root), pending,
-                                                 lambda xy: disabled_at(root, xy))
+                        picked = pick_title_rows(targets, self.switch_rows(root), pending,  # noqa: B023 - targets 当轮创建，pick_title_rows 同步调用
+                                                 lambda xy: disabled_at(root, xy))  # noqa: B023 - lambda 的 xy 是形参，root 是 retry_titles 的入参
                         if not picked:
                             break                       # 没有独立标题可点：不多读前台、也不多回读
                         here = self.focus()
@@ -1130,7 +1152,7 @@ class Phone:
                             break                       # 页面已经换了：新页上的同名行不是这一屏的开关
                         t, xy = picked[0]
                         self.click(*xy); self.confirm()
-                        clicked.add(t)
+                        clicked.add(t)  # noqa: B023 - clicked 当轮创建
                         done_here, pending = True, pending - {t}
                         here = self.focus()
                         if here and here != start:      # 标题不是开关：有的页面点它进的是详情页
@@ -1406,6 +1428,16 @@ class Phone:
             note += f"，没看到「{'、'.join(missed)}」"
         return f"{note}；{detail}"
 
+    def _launch_evidence(self, seizer="", frames=0):
+        """启动两条短路的现场：当前落点 + 页面结构摘要，能确知抢夺者时与落点分开写（#940）。
+
+        抛错那一刻前台可能已经被抢回目标包，轮询里记下的那一帧才是抢夺者。门槛与停段同档
+        （同一个包连续 FOREIGN_STREAK 帧）：一两帧过渡、空焦点交替都不算确知，不写也不伪造。"""
+        where, detail = self._page_diagnosis()
+        if seizer and frames >= FOREIGN_STREAK and seizer.split("/", 1)[0] != where.split("/", 1)[0]:
+            return f"（被 {seizer} 抢了前台，连续 {frames} 帧；当前停在 {where}；{detail}）"
+        return f"（停在 {where}；{detail}）"
+
     def _launch(self, pkg, activity, settle, foreground):
         """发启动命令、等前台回到目标 App、顺手关掉可识别的弹窗。落点对不对由 start() 判。"""
         self.check_alive()
@@ -1427,36 +1459,48 @@ class Phone:
                         or adb_link.detached(self.serial):
                     self.lost = True
                     raise adb_link.lost((result.output or pm).strip())
-                raise RuntimeError(f"本机没有安装 {pkg}，跳过本段")
+                # 包确实不在：这一页在这台机上本来就没有，按跳过收尾，别记成未完成（#908）。
+                raise recipe_kit.MissingPackage(f"本机没有安装 {pkg}")
             raise RuntimeError(f"无法打开 {pkg}：{result.output.strip()[-250:]}")
         expected = foreground or pkg
         started = time.monotonic()
         last = started
         waited = 0.0                       # 只有确知「不是目标 App」的时间才计入启动等待
+        # 最后读到的那一帧外来前台与它同一个包连读的帧数：抛错时前台可能已被抢回目标包（#940）。
+        # 读空只打断 seizer_run（这个包当前的连读），不抹掉 seizer / seizer_frames：
+        # 空焦点只是「读不出」，之前确知过的那一段仍是唯一的线索。
+        seizer, seizer_frames, seizer_run = "", 0, 0
         while self.focus().split("/", 1)[0] != expected:
-            current = self.focus().split("/", 1)[0]
+            focus = self.focus()
+            current = focus.split("/", 1)[0]
             now = time.monotonic()
             if not unknown_focus(current):
                 waited += now - last       # 空焦点是窗口还没画出来，顺延到 LAUNCH_HARD_STOP 为止
             last = now
             if current in PERMISSION_CONTROLLERS:
                 self.dismiss()
+            if unknown_focus(current) or current in PERMISSION_CONTROLLERS or current == expected:
+                seizer_run = 0
+            else:
+                seizer_run = seizer_run + 1 if focus == seizer else 1
+                seizer, seizer_frames = focus, seizer_run
             if waited >= LAUNCH_WAIT or now >= started + LAUNCH_HARD_STOP:
                 # 带上落点（谁抢了前台、页面长什么样）：没有包名就分不清该加白名单还是改判据（#547）。
-                where, detail = self._page_diagnosis()
-                raise RuntimeError(f"{pkg} 没有进入前台，跳过本段（停在 {where}；{detail}）")
+                raise RuntimeError(f"{pkg} 没有进入前台，跳过本段{self._launch_evidence(seizer, seizer_frames)}")
             time.sleep(0.2)
 
-        def leave_foreground():
+        def leave_foreground(seizer="", frames=0):
             # 同 #547：这条报错命中 79 份上报、51 个型号，缺的从来都是「是谁盖住了」。
-            where, detail = self._page_diagnosis()
-            raise RuntimeError(f"{pkg} 启动后离开前台，停止本段以免操作其他 App（停在 {where}；{detail}）")
+            raise RuntimeError(f"{pkg} 启动后离开前台，停止本段以免操作其他 App"
+                               f"{self._launch_evidence(seizer, frames)}")
 
         streak = 0                          # 连续读到别的 App 的帧数，读到目标包或读空就清零
+        seizer, seizer_frames, seizer_run = "", 0, 0    # 「被谁抢了前台」的记录，从这一阶段重新起算
         def check_foreground():
             """确认前台：落在目标 App 返回真（这一屏可以读、可以关弹窗），读不出或别的 App 返回假。"""
-            nonlocal streak
-            current = self.focus().split("/", 1)[0]
+            nonlocal streak, seizer, seizer_frames, seizer_run
+            focus = self.focus()
+            current = focus.split("/", 1)[0]
             # 权限申请可能在首页已出现后才弹出，也只能拒绝；不在其他 App 上找关闭按钮。
             if current in PERMISSION_CONTROLLERS:
                 give_up_at = time.monotonic() + 3
@@ -1466,18 +1510,23 @@ class Phone:
                     if current and not self.dismiss():
                         break
                     time.sleep(.2)
-                    current = self.focus().split("/", 1)[0]
+                    focus = self.focus()
+                    current = focus.split("/", 1)[0]
                 if current in PERMISSION_CONTROLLERS:      # 等满 3 秒仍在：确知被它占住
                     leave_foreground()
             if unknown_focus(current):
                 streak = 0
+                seizer_run = 0
                 return False
             if current == expected:
                 streak = 0
+                seizer_run = 0
                 return True
             streak += 1
+            seizer_run = seizer_run + 1 if focus == seizer else 1
+            seizer, seizer_frames = focus, seizer_run
             if streak >= FOREIGN_STREAK:
-                leave_foreground()
+                leave_foreground(seizer, seizer_frames)
             return False
 
         # 旧版商店冷启动可能暂时没有可读文字；空白不等于广告，不能盲按返回退出 App。

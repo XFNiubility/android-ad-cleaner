@@ -46,11 +46,24 @@ class XiaomiFamilyTests(unittest.TestCase):
         path, _ = self.pick("BP2A.250605.031.A3", os_="OS3.0.308.0.WNBCNXM")
         self.assertEqual(Path(path).parent.name, "xiaomi-NEW3")
 
-    def test_a_more_specific_recording_beats_a_coarser_one(self):
-        # 两条都能前缀命中；OS3.0.308 比 OS3.0 更贴这台
-        self.assertEqual(Path(self.pick("OS3.0.308.0.WNBCNXM")[0]).parent.name, "xiaomi-NEW3")
-        # 只有粗录制对得上时用它
-        self.assertEqual(Path(self.pick("OS3.0.500.0.WNBCNXM")[0]).parent.name, "redmi-COARSE")
+    def test_a_finer_recording_beats_a_matching_pinned_reference(self):
+        # #969 的本质：设备 OS4.0.5.0 以固定参考的 OS4.0 开头，旧代码到此为止；
+        # 同族里录在同一个 OS4.0.5.0 上的脚本从来进不了候选。
+        write_recipe(self.root, "xiaomi-SAME", "OS4.0.5.0", 9)
+        self.assertEqual(Path(self.pick("OS4.0.5.0.XPKCNXM")[0]).parent.name, "xiaomi-SAME")
+
+    def test_a_family_script_as_coarse_as_the_reference_is_not_picked(self):
+        """旧树也绿，守的是不回退：同族里另一份也只录到 OS4.0，与固定参考等长，对这台机同样贴。
+
+        目录名字母序（xiaomi-COARSE2 排在 xiaomi-M154FF 前）不参与决定（#969）。
+        """
+        write_recipe(self.root, "xiaomi-COARSE2", "OS4.0", 9)
+        self.assertEqual(Path(self.pick("OS4.0.5.0.XPKCNXM")[0]).parent.name, "xiaomi-M154FF")
+
+    def test_among_equally_specific_scripts_more_steps_wins(self):
+        write_recipe(self.root, "xiaomi-FEW", "OS3.0.308.0", 9)
+        write_recipe(self.root, "xiaomi-MANY", "OS3.0.308.0", 12)
+        self.assertEqual(Path(self.pick("OS3.0.308.0.WNBCNXM")[0]).parent.name, "xiaomi-MANY")
 
     def test_a_narrower_script_does_not_replace_a_wider_one(self):
         write_recipe(self.root, "xiaomi-NARROW", "OS3.0.308.0", 5)
@@ -74,6 +87,50 @@ class XiaomiFamilyTests(unittest.TestCase):
         write_recipe(self.root, "xiaomi-NEW3", "OS3.0.308.0", 9, filename="recipe_v2.py")
         path, _ = self.pick("OS3.0.308.0.WNBCNXM")
         self.assertEqual(Path(path).name, "recipe.py")
+
+    def test_a_script_recorded_on_the_android_base_is_never_picked(self):
+        # #942：底包是跨机型共享的 Android 构建号，同一代的小米机都报同一个。
+        # 录了底包的脚本若参与同版本挑选，任何同代小米机都会被它命中。
+        write_recipe(self.root, "xiaomi-ONBASE", "BP2A.250605.031", 10)
+        path, reference = self.pick("BP2A.250605.031.A3", os_="OS3.0.500.0.WNBCNXM")
+        self.assertEqual(Path(path).parent.name, "redmi-COARSE")
+        self.assertTrue(reference)
+
+    def test_scripts_on_the_same_base_with_different_roms_do_not_pick_each_other(self):
+        write_recipe(self.root, "xiaomi-ONBASE", "BP2A.250605.031", 10)
+        path, _ = self.pick("BP2A.250605.031.A3", os_="OS3.0.308.0.WNBCNXM")
+        self.assertEqual(Path(path).parent.name, "xiaomi-NEW3")
+
+    def test_the_same_rom_is_still_matched_when_the_base_differs(self):
+        # 底包只决定落在哪个字段上比：两台机底包不同、ROM 相同，仍挑同一份脚本（#942）。
+        a, _ = self.pick("BP2A.250605.031.A3", os_="OS3.0.308.0.WNBCNXM")
+        b, _ = self.pick("CP2A.260605.016", os_="OS3.0.308.0.WNBCNXM")
+        self.assertEqual(Path(a).parent.name, "xiaomi-NEW3")
+        self.assertEqual(Path(b).parent.name, "xiaomi-NEW3")
+
+    def test_an_unlabelled_script_never_matches_an_unlabelled_device(self):
+        """旧树也绿，守的是不回退：空核心不能变成「匹配一切」。"""
+        write_recipe(self.root, "xiaomi-UNLABELLED", "", 10)
+        path, _ = self.pick("")
+        self.assertEqual(Path(path).parent.name, "xiaomi-M154FF")
+
+
+class XiaomiVersionCoreTests(unittest.TestCase):
+    """小米的 ro.build.display.id 可能是 Android 底包，那一段不能当版本核心（#942）。"""
+
+    def test_the_android_base_is_not_a_version_core(self):
+        self.assertEqual(run.version_core("BP2A.250605.031", "xiaomi"), "")
+        self.assertEqual(run.version_core("BP2A.250605.031.A3", "xiaomi"), "")
+        self.assertEqual(run.version_core("CP2A.260605.016", "xiaomi"), "")
+        # Android 12/13 的底包是三字母 + 一位数字，形状比 BP2A 短一档。
+        self.assertEqual(run.version_core("SKQ1.210908.001", "xiaomi"), "")
+        self.assertEqual(run.version_core("TKQ1.221114.001", "xiaomi"), "")
+
+    def test_a_hyperos_version_is_still_a_core(self):
+        """旧树也绿，守的是不回退：别把 ROM 版本号也当成底包吃掉。"""
+        self.assertEqual(run.version_core("OS3.0.307.0.WOCCNXM", "xiaomi"), "OS3.0.307.0.WOCCNXM")
+        self.assertEqual(run.version_core("OS3.0", "xiaomi"), "OS3.0")
+        self.assertEqual(run.version_core("V816.0.1.0.UMCCNXM", "xiaomi"), "V816.0.1.0.UMCCNXM")
 
 
 class OppoFamilyTests(unittest.TestCase):
@@ -132,6 +189,17 @@ class VivoFamilyTests(unittest.TestCase):
 
     def test_falls_back_when_the_version_is_not_recorded_anywhere(self):
         self.assertEqual(Path(self.pick("PD9999_A_18")[0]).parent.name, "vivo-V2547DA")
+
+    def test_a_same_length_family_script_does_not_beat_the_pinned_reference(self):
+        """旧树也绿，守的是不回退：固定参考只录到 16，同族里也写 16 的脚本不比它更贴。
+
+        保固定参考——否则按目录名字母序（vivo-V2309A 排在 vivo-V2547DA 前）会被挑到
+        一份纯属意外的脚本上（#969）。
+        """
+        write_recipe(self.root, "vivo-V2309A", "PD9999_A_16", 8)
+        path, reference = self.pick("PD9999_A_16.1.0")
+        self.assertEqual(Path(path).parent.name, "vivo-V2547DA")
+        self.assertTrue(reference)
 
     def test_picks_the_script_recorded_on_an_aosp_build(self):
         # #580：Android 17 起 vivo 有的机器直接报 AOSP 平台构建号，没有机型前缀可切。
@@ -217,19 +285,27 @@ class MeizuFamilyTests(unittest.TestCase):
         self.assertEqual(Path(self.pick("M621Q Flyme 14.0.0.0A")[0]).parent.name, "meizu-MEIZU 21 Pro")
 
 
+class RealXiaomiRecipeBuildTests(unittest.TestCase):
+    """真实脚本的录制值要有区分力：回退成只剩大版本会让同族机型误借（#942）。"""
+
+    def test_redmi_note_12_turbo_records_the_full_hyperos_version(self):
+        path = str(ROOT / "recipes/redmi-23049RAD8C/recipe.py")
+        self.assertEqual(run.recipe_meta(path)["build"], "OS3.0.5.0")
+
+
 class CheckLineTests(unittest.TestCase):
     """check 的「机型脚本」一行要同时给出录制版本和设备版本。"""
 
     INFO = {"brand": "Xiaomi", "model": "ZZZ0000", "name": "Xiaomi ZZZ",
             "build": "OS3.0.308.0.WNBCNXM", "os": "OS3.0.308.0.WNBCNXM", "android": "16"}
 
-    def check_output(self, recorded):
+    def check_output(self, recorded, name="xiaomi-M154FF", brand="Xiaomi"):
         with tempfile.TemporaryDirectory() as root:
-            write_recipe(root, "xiaomi-REF", recorded, 9)
-            recipe = str(Path(root, "recipes", "xiaomi-REF", "recipe.py"))
+            write_recipe(root, name, recorded, 9)
+            recipe = str(Path(root, "recipes", name, "recipe.py"))
             out = io.StringIO()
             with patch.object(run, "ROOT", root), \
-                 patch.object(run, "info", return_value=dict(self.INFO)) as info, \
+                 patch.object(run, "info", return_value=dict(self.INFO, brand=brand)) as info, \
                  patch.object(run, "recipe_for", return_value=(recipe, True)) as recipe_for, \
                  patch.object(run, "locked", return_value=False) as locked, \
                  patch.object(run, "input_blocked", return_value=False) as input_blocked, \
@@ -249,6 +325,43 @@ class CheckLineTests(unittest.TestCase):
         self.assertIn("录制版本 OS3.0.308", out)
         self.assertIn("这台 OS3.0.308.0.WNBCNXM（相同）", out)
         self.assertIn("recipe --ref", out)
+        self.assertNotIn("非固定参考", out)
+
+    def test_a_family_script_is_marked_as_not_the_pinned_reference(self):
+        # 换到同族更贴的那份时要说清楚，报告者才知道要不要手动补入口（#969）。
+        out = self.check_output("OS3.0.308", name="xiaomi-2512BPNDAC")
+        self.assertIn("（同族同版本，非固定参考）", out)
+        self.assertIn("录制版本 OS3.0.308，这台 OS3.0.308.0.WNBCNXM（相同）", out)
+
+    def test_a_family_without_a_pinned_reference_is_not_marked(self):
+        """旧树也绿，守的是不回退：三星 / 华为没有 REFERENCE 键，走的是「取同品牌第一份」。
+
+        那条路没比过版本，不能标「同族同版本」（#969）。
+        """
+        out = self.check_output("One UI 4", name="samsung-SM9760", brand="Samsung")
+        self.assertNotIn("非固定参考", out)
+
+    def test_the_suffix_comes_from_the_real_pick(self):
+        # 端到端：真跑 recipe_for，固定参考 OS4.0 命中后仍换成录在 OS4.0.5.0 上的同族脚本（#969）。
+        device = dict(self.INFO, build="OS4.0.5.0.XPKCNXM", os="OS4.0.5.0.XPKCNXM")
+        with tempfile.TemporaryDirectory() as root:
+            write_recipe(root, "xiaomi-M154FF", "OS4.0", 9)
+            write_recipe(root, "xiaomi-2512BPNDAC", "OS4.0.5.0", 9)
+            out = io.StringIO()
+            with patch.object(run, "ROOT", root), \
+                 patch.object(run, "info", return_value=device), \
+                 patch.object(run, "locked", return_value=False), \
+                 patch.object(run, "input_blocked", return_value=False), \
+                 patch.object(run, "ad_packages", return_value=[]), \
+                 patch.object(run, "quickapps", return_value=[]), \
+                 patch.object(run, "sh", return_value=""), \
+                 patch.object(sys, "argv", ["run.py", "-s", "test", "check"]), \
+                 contextlib.redirect_stdout(out):
+                run.main()
+        text = out.getvalue()
+        picked = str(Path("recipes", "xiaomi-2512BPNDAC", "recipe.py"))
+        self.assertIn(f"{picked}（同族同版本，非固定参考）", text)
+        self.assertIn("这台 OS4.0.5.0.XPKCNXM（相同）", text)
 
     def test_different_version_says_so(self):
         out = self.check_output("OS4.0")

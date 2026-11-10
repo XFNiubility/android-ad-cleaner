@@ -11,13 +11,11 @@
 草稿不是适配：入口路径来自探路读屏，未经人工逐步核对；自检只证明「进得去、关得掉、回读确认」。
 转正式机型脚本前必须人工在手机上核对，并补上 BUILD 录制版本。不要直接放进 recipes/。
 """
-import datetime, json, os, re, shlex, subprocess, sys
+import datetime, json, os, re, subprocess, sys
 import xml.etree.ElementTree as ET
-for _st in (sys.stdout, sys.stderr):
-    try:
-        _st.reconfigure(encoding="utf-8", errors="replace")   # Windows 控制台默认不是 UTF-8
-    except Exception:
-        pass
+from stdio import use_utf8_console
+
+use_utf8_console()
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import entries
 import fast                                    # 只读 want_state / 驱动 Phone；不改引擎
@@ -45,7 +43,7 @@ def parse_tsv(path):
         if cols and cols[0] == "包名":
             continue                            # 表头
         cols += [""] * (len(TSV_COLS) - len(cols))
-        rows.append(dict(zip(TSV_COLS, cols[:len(TSV_COLS)])))
+        rows.append(dict(zip(TSV_COLS, cols[:len(TSV_COLS)], strict=True)))    # 上一行已把 cols 补齐到 len(TSV_COLS)
     return rows
 
 
@@ -145,7 +143,8 @@ def render_draft(groups, model, build, source):
         f"# 生成时间：{when}；来源：{source}",
         "# 自检：python3 tool/run.py -s <序列号> adapt check <本文件>",
         "#   自检只证明「进得去、关得掉、回读确认」，不代表适配完成；",
-        "#   转为正式机型脚本前，必须人工在手机上核对每一步，并补 BUILD 录制版本。",
+        "#   转为正式机型脚本前，必须人工在手机上核对每一步，并补 BUILD 录制版本"
+        "（小米系填 HyperOS 版本号，别填 Android 底包）。",
         "# 不要直接放进 recipes/：放进去会被当成本型号的正式脚本自动匹配。",
         "# ======================================================================",
         f"BUILD = {json.dumps(build)}",
@@ -244,7 +243,8 @@ def cmd_gen(rest):
     if not model:
         print("没能从文件名认出型号，MODELS 为空；补型号用 --model，或直接把文件名改成 探路-<型号>.tsv")
     if not build:
-        print("BUILD 为空：自检时不比对系统版本；转正式脚本前请填上录制版本（ro.build.display.id）")
+        print("BUILD 为空：自检时不比对系统版本；转正式脚本前请填上录制版本"
+              "（小米系填 ro.mi.os.version.incremental，别填 ro.build.display.id 的 Android 底包）")
     print(f"下一步：python3 tool/run.py -s <序列号> adapt check {out}")
     print("自检通过也不等于适配完成：请人工在手机上核对每一步，再决定是否转为正式机型脚本。")
     return 0
@@ -324,8 +324,6 @@ def cmd_check(rest):
 
 # ---------- 试入口 ----------
 
-CLEAR_TASK = "0x10008000"
-
 
 def _installed_packages(p):
     """一次 `pm list packages` 换成集合：逐条 `pm path` 每次都要起一个进程。"""
@@ -359,14 +357,12 @@ def survey(p, family, words, log=print, now=None, sleep=None):
     for group, entry in entries.ENTRIES.get(family, {}).items():
         for d in entry.direct:
             page = entries.full(d.pkg, d.activity)
-            # 带清栈参数启动会立刻退出的页面只能裸启动（entries.Direct.keep_task）
-            flag = "" if d.keep_task else f" -f {CLEAR_TASK}"
-            result = p.reader.shell(f"am start -W{flag} -n {shlex.quote(d.pkg + '/' + page)}")
+            result = p.reader.shell(entries.start_command(d, wait=True))
             if getattr(result, "exit_code", 0) or re.search(r"Error|Exception", result.output or "", re.I):
                 log(f"✗ 打不开  {group} {page}")
                 rows.append({"group": group, "page": page, "landed": False, "expect": False, "words": []})
                 continue
-            if not wait.until(lambda: entries.landed(p, d), timeout=4, poll=0.2, now=now, sleep=sleep):
+            if not wait.until(lambda: entries.landed(p, d), timeout=4, poll=0.2, now=now, sleep=sleep):  # noqa: B023 - d 当轮创建当轮消费，until 同步轮询
                 log(f"落在别处（实际 {p.focus() or '未知页面'}）  {group} {page}")
                 rows.append({"group": group, "page": page, "landed": False, "expect": False, "words": []})
                 continue

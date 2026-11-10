@@ -421,7 +421,7 @@ async function showDetect(){
     <div class="grid">
       <div class="kv"><small>手机</small><span>${esc(name)}</span></div>
       <div class="kv"><small>型号 / 系统</small><span>${esc(i.model)}</span> · ${esc(i.os || i.build)}</div>
-      <div class="kv"><small>机型脚本</small>${!st.recipe ? `<span class="tag info">还没有</span>` : st.recipe_ref ? `<span class="tag info">有同品牌参考</span>` : st.recipe_ok ? `<span class="tag ok">有，版本一致</span>` : `<span class="tag warn">有，系统版本不同</span>`}</div>
+      <div class="kv"><small>机型脚本</small>${!st.recipe ? `<span class="tag info">还没有</span>` : st.recipe_ref ? `<span class="tag info">有同品牌参考</span>` : !st.recipe_build ? `<span class="tag info">有，录制版本未标</span>` : st.recipe_ok ? `<span class="tag ok">有，版本一致</span>` : `<span class="tag warn">有，系统版本不同</span>`}</div>
       <div class="kv"><small>快应用</small>${qa.length ? `<span>${qa.length} 个组件</span> ${qa.every(q => q.closed || q.keep) ? `<span class="tag ok">已关闭${qaKeep ? `（保留 ${qaKeep} 个系统组件）` : ""}</span>` : `<span class="tag warn">开着</span>`}` : `<span>没有检测到</span>`}</div>
       <div class="kv"><small>广告组件</small>${st.ads.length ? `<span>${st.ads.length} 个</span> ${st.ads.every(a => a.suspended) ? `<span class="tag ok">已挂起</span>` : `<span class="tag warn">在运行</span>`}` : `<span>没有已知的</span>`}</div>
       <div class="kv"><small>开发者模式</small><span>开着</span></div>
@@ -433,8 +433,10 @@ async function showDetect(){
 }
 
 const CHECKLIST = {OPPO: "OPPO-ColorOS.md", ONEPLUS: "OPPO-ColorOS.md", REALME: "OPPO-ColorOS.md", HONOR: "荣耀-MagicOS.md",
-  XIAOMI: "小米-HyperOS.md", REDMI: "小米-HyperOS.md", POCO: "小米-HyperOS.md", VIVO: "vivo-OriginOS.md", IQOO: "vivo-OriginOS.md"};
-const CHECKLIST_NAME = {"OPPO-ColorOS.md": "OPPO / ColorOS ", "荣耀-MagicOS.md": "荣耀 / MagicOS ", "小米-HyperOS.md": "小米 / HyperOS ", "vivo-OriginOS.md": "vivo / OriginOS "};
+  XIAOMI: "小米-HyperOS.md", REDMI: "小米-HyperOS.md", POCO: "小米-HyperOS.md", VIVO: "vivo-OriginOS.md", IQOO: "vivo-OriginOS.md",
+  HUAWEI: "华为-HarmonyOS.md", SAMSUNG: "三星-OneUI.md", MEIZU: "魅族-Flyme.md"};
+const CHECKLIST_NAME = {"OPPO-ColorOS.md": "OPPO / ColorOS ", "荣耀-MagicOS.md": "荣耀 / MagicOS ", "小米-HyperOS.md": "小米 / HyperOS ", "vivo-OriginOS.md": "vivo / OriginOS ",
+  "华为-HarmonyOS.md": "华为 / HarmonyOS ", "三星-OneUI.md": "三星 / One UI ", "魅族-Flyme.md": "魅族 / Flyme "};
 function checklistName(brand){ return CHECKLIST_NAME[CHECKLIST[(brand || "").toUpperCase()]] || ""; }
 function openChecklist(){
   const f = CHECKLIST[((S.status && S.status.info.brand) || "").toUpperCase()];
@@ -464,7 +466,7 @@ async function showChoose(){
       <small>广告常用 hap:// 链接把人跳进快应用。${qaKeepNote}；vivo 优先使用快应用服务开关，其他支持的机型使用挂起。${qaOn.some(q => q.used) ? "检测到近期打开过，确认不是你主动在用。" : "请确认负一屏快递卡片等常用服务不依赖快应用。"}可还原。</small></span></label>`
       : `<p class="lead" style="margin:0">${st.quickapps.length ? "可关闭的快应用组件都已关闭。" : "没有检测到快应用组件。"}</p>`}</div>
     <div class="card"><h3>系统广告组件</h3>${adsOn.length ? adsOn.map(a => `
-      <label class="chk"><input type="checkbox" class="c-ad" value="${esc(a.pkg)}"><span>挂起 <code>${esc(a.pkg)}</code><small>${adName(a.pkg)}。挂起只是暂停运行，可还原，不影响系统更新。</small></span></label>`).join("")
+      <label class="chk"><input type="checkbox" class="c-ad" value="${esc(a.pkg)}"${a.default_on ? " checked" : ""}><span>挂起 <code>${esc(a.pkg)}</code><small>${adName(a.pkg)}。挂起只是暂停运行，可还原，不影响系统更新。</small></span></label>`).join("")
       : `<p class="lead" style="margin:0">${st.ads.length ? "已经挂起。" : "没有已知的广告组件。"}</p>`}</div>
     <div class="note info">执行期间请保持手机亮屏、解锁、插着线，不要碰手机。</div>
     <div class="actions"><button class="btn plain" onclick="showDetect()">上一步</button><button class="btn plain" id="ui-check" onclick="checkUi()">检查读屏连接</button><button class="btn" onclick="go()">开始执行</button></div>`;
@@ -602,8 +604,11 @@ function runSummary(t, turnedOff){
   }
   return parts.join("；");
 }
+/* 机器行（tool/events.py 的 `#aac:event ` / `#aac:payload `）本该被 gui/app.py 的 _log() 挡在 tail
+   外面；漏一处，末行兜底就会把它原样显示给用户。两边各剥一次（手机版同名函数，见 view.py，#1002）。 */
 function summarize(res){
-  const t = res.tail.join("\n");
+  const tail = res.tail.filter(line => !line.startsWith("#aac:"));
+  const t = tail.join("\n");
   let m;
   if ((m = t.match(/机型脚本跑完：关了 (\d+) 个，(\d+) 秒/))) return runSummary(t, Number(m[1]));
   if ((m = t.match(/拨了 (\d+) 个/))){ const left = (t.match(/仍开着: (\d+) 个/) || [])[1]; return `关了 ${m[1]} 个渠道` + (left !== undefined ? `，复查仍开着 ${left} 个` : ""); }
@@ -611,7 +616,7 @@ function summarize(res){
   if (/快照已存/.test(t)) return "已保存";
   if ((m = t.match(/插电常亮已改回 (\d+)/))) return `插电常亮已改回 ${m[1]}`;
   if (/插电常亮未改动/.test(t)) return "插电常亮未改动";
-  return res.tail.filter(Boolean).slice(-1)[0] || "";
+  return tail.filter(Boolean).slice(-1)[0] || "";
 }
 function showDone(r){
   setStep(5);

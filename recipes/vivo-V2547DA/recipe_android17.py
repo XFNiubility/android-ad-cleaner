@@ -51,8 +51,12 @@ def off_unnamed(page):
     """这一页上没有标题的开关：按位置一个个关，点一次回读一次。
     商店「个性化推荐」页的两个开关 content-desc 只有「开启，开关」（#220）：p.off() 按标题匹配，
     空标题的行整行跳过——既关不到，也不会报「关不掉」，所以只有这一页自己点。
-    灰的行不点（#333）；点完读不到开关（被确认框挡住）不算关掉（#486 的教训：读空不等于成功）。"""
+    灰的行不点（#333）；点完读不到开关（被确认框挡住）不算关掉（#486 的教训：读空不等于成功）。
+    安全模式下不点：无标题的行不在脚本点名的范围内（#909）。"""
     from row import disabled_at
+    if p.safe_mode:
+        print(f"  · {page}：安全模式不做整页全关，无标题开关未改动", flush=True)
+        return 0
     root = p.tree()
     targets = [xy for title, on, xy in p.switches(root) if not title and on]
     if not targets:
@@ -84,7 +88,8 @@ def opened(start):
     try:
         start()
         return True
-    except adb_link.DeviceLost:
+    except (adb_link.DeviceLost, SkipStep):
+        # 跳过（App 本机没装 / 按约定不跑）不是「这条路不通」：放行，由段包装记跳过（#908）
         raise
     except RuntimeError as e:
         if p.lost:
@@ -142,8 +147,8 @@ def _():
     try:
         p.start("com.bbk.appstore", ".ui.menu.AppstoreSettingsActivity")
         reached = "AppstoreSettingsActivity" in p.focus()
-    except adb_link.DeviceLost:
-        raise                     # DeviceLost 也是 RuntimeError：断线不能当成「这一页打不开」再空跑一次
+    except (adb_link.DeviceLost, SkipStep):
+        raise                     # DeviceLost 也是 RuntimeError：断线不能当成「这一页打不开」再空跑一次；跳过同样放行（#908）
     except RuntimeError as e:
         print(f"  · 直达商店设置页失败（{e}），改走「我的 → 设置」")
         reached = False

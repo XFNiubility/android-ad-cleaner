@@ -4,13 +4,11 @@
 
 ## 基线钉 SHA
 
-派审查前先取本分支的基点：`git merge-base HEAD origin/main`，把那个 SHA 和 `git diff <sha>` 一起写进 prompt。不要传分支名 `main`，也不要用 `origin/main` 当时的位置：别的会话合了 PR 之后，那个位置会把别人的提交算进本分支的改动面，各轴会数到不同的树。基点按本地的 `origin/main` 算，取到的比预期旧就先 `git fetch origin main`；分支 rebase、或者把 `origin/main` 合并进来之后，基点会前移，也要重取。自述改动面时同样按这个 SHA 算 `git diff <sha>`，不写 `origin/main` 尖端。 <!-- rule:doc.review.base-sha-pinned -->
-
-实现若在 `git worktree` 里做，prompt 必须写 `git -C <worktree 绝对路径> diff <sha>`，并把未跟踪的新文件单独列出；同时声明「只审该目录，不看主副本」。不写路径时审查代理在 cwd（通常是主副本）上跑，会审到别的会话未提交的改动与已合并的历史提交。 <!-- rule:doc.review.worktree-diff-path -->
+派审查前先取本分支的基点：`git merge-base HEAD origin/main`，把那个 SHA 和 `git diff <sha>` 一起写进 prompt。不要传分支名 `main`，也不要用 `origin/main` 当时的位置：别的会话合了 PR 之后，那个位置会把别人的提交算进本分支的改动面，各轴会数到不同的树。基点按本地的 `origin/main` 算，取到的比预期旧就先 `git fetch origin main`；分支 rebase、或者把 `origin/main` 合并进来之后，基点会前移，也要重取。自述改动面时同样按这个 SHA 算 `git diff <sha>`，不写 `origin/main` 尖端。实现若在 `git worktree` 里做，prompt 必须写 `git -C <worktree 绝对路径> diff <sha>`，并把未跟踪的新文件单独列出；同时声明「只审该目录，不看主副本」——不写路径时审查代理在 cwd（通常是主副本）上跑，会审到别的会话未提交的改动与已合并的历史提交。 <!-- rule:doc.review.base-sha-pinned -->
 
 分工：Spec 轴只核票面覆盖，不查计数；数字对不上归 Standards 轴一次说清。代理报回来的计数自己复核后再写进文档。 <!-- rule:doc.review.axis-ownership -->
 
-## 评审期间冻结工作区
+## 审查期间冻结工作区
 
 代理跑起来之后不要再改被审的文件。并发上限是 3，五路要分两批，中途改动会让后一批看到另一棵树：候选 1 那一轮三个代理读到同一个文件的三个快照，其中一路把「567 项 1 红」当结论报上来——那条用例刚写完就已经修了，另一路把 ADR 里改前的基线行号当成新文件的行号报错。
 
@@ -30,8 +28,17 @@
 
 ## 结论去哪
 
-- **有 PR**：按仓库格式回 PR 评论，只报 80 分以上的问题。 <!-- rule:doc.review.findings-threshold -->
-- **没有 PR**：结论回在对话里，不要为了评论先去建 PR。 <!-- rule:doc.review.no-pr-no-comment -->
+派过审查的改动，PR 建好之后由发起审查的会话补一条评论，零发现也发；评论带基线 SHA 与当次实际跑过的轴，只列 80 分以上。不按作者与改动类型区分，外部贡献者的 PR 审过照发。 <!-- rule:doc.review.conclusion -->
+
+开头行逐字固定，`<axes>` 填实际跑过的轴（`standards, bugs` 或 `standards, bugs, history`；文档/测试类 diff 按「规模与配额」只跑两轴，别写三轴）：
+
+    Review (baseline <sha>): <axes> — no findings above 80.
+
+有发现时开头行不变，`— ` 之后换成条目数；正文按「文件:行号 — 一句话 — 出错场景 — 置信度」各占一行，末尾一句处置：`fixed in <sha>`，或未修的原因。
+
+发这条评论视为「批准建 PR」那次授权的一部分，不再单独确认——这是对外可见动作的显式豁免。
+
+没有 PR（结论还在对话里或 PR 未开）：不要为了留评论先建 PR。
 
 代理报回来的问题自己复核再改。改完做一次「撤掉就返红」的验证，别只信代理给的置信度。 <!-- rule:doc.review.verify-before-fix -->
 

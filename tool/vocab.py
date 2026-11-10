@@ -23,6 +23,7 @@ from dataclasses import dataclass, field
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from entries import ENTRIES, FAMILY, LABEL
 from polarity import want_state       # 只取极性与词表；不 import fast，那条链会连带 adbutils（#693）
+from stdio import use_utf8_console
 
 # (家族, 页面标签前缀) → 分组。前缀是 page= 里「·」前面那段，是脚本内部写法，只在这里翻译成分组。
 PAGES = {
@@ -206,7 +207,8 @@ def _dicts(tree):
                 if isinstance(target, ast.Name):
                     found.pop(target.id, None)
                     if isinstance(node.value, ast.Dict):
-                        found[target.id] = {k.value: v for k, v in zip(node.value.keys, node.value.values)
+                        # ast.Dict 的 keys 与 values 恒等长
+                        found[target.id] = {k.value: v for k, v in zip(node.value.keys, node.value.values, strict=True)
                                             if isinstance(k, ast.Constant)}
     return found
 
@@ -230,7 +232,7 @@ def _notes(tree, script):
     out = []
     for node in tree.body:
         if isinstance(node, ast.Assign) and isinstance(node.value, ast.Dict):
-            for key, value in zip(node.value.keys, node.value.values):
+            for key, value in zip(node.value.keys, node.value.values, strict=True):    # ast.Dict 的 keys 与 values 恒等长
                 if (isinstance(key, ast.Constant) and isinstance(value, ast.Constant)
                         and isinstance(value.value, str) and CJK.search(value.value)):
                     out += [Note(part.strip(), str(key.value), script, value.lineno)
@@ -246,8 +248,12 @@ def _page_label(node):
         return node.value
     if isinstance(node, ast.JoinedStr):
         parts = []
+        # JoinedStr 的成员只有两类：常量与 FormattedValue（后者取它包着的那个表达式）
         for value in node.values:
-            parts.append(value.value if isinstance(value, ast.Constant) else "{" + ast.unparse(value.value) + "}")
+            if isinstance(value, ast.Constant):
+                parts.append(str(value.value))            # f-string 的字面量段恒是 str
+            elif isinstance(value, ast.FormattedValue):
+                parts.append("{" + ast.unparse(value.value) + "}")
         return "".join(parts)
     return f"<{ast.unparse(node)}>"
 
@@ -504,11 +510,7 @@ def _recipes_dir():
 
 
 if __name__ == "__main__":
-    for _stream in (sys.stdout, sys.stderr):
-        try:
-            _stream.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    use_utf8_console()
     if len(sys.argv) == 1:
         sys.stdout.write(render(_recipes_dir()))
     elif len(sys.argv) == 3 and sys.argv[1] == "gaps":
@@ -516,7 +518,7 @@ if __name__ == "__main__":
             sys.stdout.write(gaps(_recipes_dir(), sys.argv[2]))
         except (FileNotFoundError, ValueError) as error:
             print(error, file=sys.stderr)
-            raise SystemExit(1)
+            raise SystemExit(1) from None
     else:
         print("用法：python3 tool/vocab.py [gaps <目录名>]", file=sys.stderr)
         raise SystemExit(1)

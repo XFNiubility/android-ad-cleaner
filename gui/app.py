@@ -126,17 +126,14 @@ def _fix_stdio():
                                                     errors="replace", line_buffering=True, write_through=True))
             except OSError:
                 setattr(sys, name, open(os.devnull, "w", encoding="utf-8"))
-    for st in (sys.stdout, sys.stderr):        # Windows 控制台默认 cp1252/GBK，中文和 ✗ ▶ 会报错；打包后 PYTHONIOENCODING 不生效
-        try:
-            st.reconfigure(encoding="utf-8", errors="replace")
-        except Exception:
-            pass
+    # Windows 控制台默认 cp1252/GBK，中文和 ✗ ▶ 会报错；打包后 PYTHONIOENCODING 不生效
+    _tool("stdio").use_utf8_console()
 
 
 def cli_main():
+    sys.path.insert(0, TOOL)
     _fix_stdio()
     script, args = sys.argv[2], sys.argv[3:]
-    sys.path.insert(0, TOOL)
     sys.argv = [os.path.join(TOOL, script)] + args
     try:
         runpy.run_path(os.path.join(TOOL, script), run_name="__main__")
@@ -348,6 +345,17 @@ def plan_tasks(serial, plan, offered=None):
     tasks = []
     if plan.get("backup", True):
         tasks.append(Task("存改动前的快照", "run.py", ["-s", serial, "backup"], kind="backup"))
+    # msa 没挂起时它的开屏窗会抢走主题段的前台，所以挂起排在广告段之前（#968）
+    ads = list(plan.get("ads") or [])
+    if ads:
+        tasks.append(Task("挂起广告组件", "run.py", ["-s", serial, "suspend", *ads], kind="ads"))
+    elif offered is not None:
+        seen = offered.get("ads") or []
+        tasks.append(not_run("挂起广告组件",
+                             "没有已知的广告组件" if not seen
+                             else "广告组件已经挂起" if all(a.get("suspended") for a in seen)
+                             else UNCHECKED,
+                             kind="ads"))
     steps = list(plan.get("steps") or [])
     if steps:
         title = "关闭各 App 里的广告开关"
@@ -379,16 +387,6 @@ def plan_tasks(serial, plan, offered=None):
                              else "可关闭的快应用组件都已关闭" if all(q.get("closed") or q.get("keep") for q in apps)
                              else UNCHECKED,
                              kind="quickapp"))
-    ads = list(plan.get("ads") or [])
-    if ads:
-        tasks.append(Task("挂起广告组件", "run.py", ["-s", serial, "suspend", *ads], kind="ads"))
-    elif offered is not None:
-        seen = offered.get("ads") or []
-        tasks.append(not_run("挂起广告组件",
-                             "没有已知的广告组件" if not seen
-                             else "广告组件已经挂起" if all(a.get("suspended") for a in seen)
-                             else UNCHECKED,
-                             kind="ads"))
     # 重试轮只在收尾上一轮没做成时才跑它（#638）；首次执行没有这个键，照旧收尾
     if plan.get("finish", True):
         tasks.append(Task("收尾", "run.py", ["-s", serial, "finish"], kind="finish"))
@@ -1595,7 +1593,10 @@ class Api:
             elif st.get("recipe_ref"):
                 script = f"{recipe}（同品牌参考脚本，录制版本 {st.get('recipe_build') or '未标'}）"
             else:
-                script = f"{recipe}（录制版本 {st.get('recipe_build')}，{'一致' if st.get('recipe_ok') else '不一致'}）"
+                # 没标录制版本就无从比对，别写成「一致」（#942）。
+                rb = st.get("recipe_build")
+                script = f"{recipe}（录制版本 {rb}，{'一致' if st.get('recipe_ok') else '不一致'}）" if rb \
+                    else f"{recipe}（录制版本 未标）"
             lines += [f"- 手机：{nm}（{i.get('model')}）",
                       f"- 系统：{i.get('os') or i.get('build')}（{i.get('build')}），Android {i.get('android')}",
                       f"- 机型脚本：{script}",
