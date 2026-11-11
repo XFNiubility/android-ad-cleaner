@@ -115,6 +115,22 @@ why = "类型错误此前只能靠人读：`None` 上取属性、传错参数类
 expires_if = "类型检查不再跑 mypy，或扫描范围重新回到命令行参数里时删。"
 
 [[rule]]
+id = "dev.types.strict-on-pure-modules"
+source = "CLAUDE.md#开发"
+check = "none"
+status = "manual"
+why = "宽松档只查函数体内的表达式：一个没写返回类型的函数被调用方按返回值用时不会红，把 `str | None` 传给只收 `str` 的正则 `search()` 也要等真机走到那条分支。这六个模块不碰设备、不碰手机界面、不依赖假对象，注解补完能让调用方一起被查；其余引擎目录带假对象与注入作用域，全仓开严格档会撞上它们赖以灵活的形状（#997）。mypy 在 overrides 里把 `strict = true` 当全局设置，所以名单里是逐项 flag；整块删掉这些 override 时 mypy 仍绿（宽松档不要求注解），没有能返红的守卫，所以只记 manual。"
+expires_if = "这几类模块开始依赖假对象或注入作用域、严格档保持不住绿时删；或全仓改成严格档时并进 dev.types.narrow-scope-in-config。"
+
+[[rule]]
+id = "doc.types.annotations-preferred-not-required"
+source = "CODING_STANDARDS.md#纯逻辑模块优先带注解"
+check = "none"
+status = "advisory"
+why = "注解的收益取决于调用面：纯逻辑模块补完能一路追到调用方，带假对象的模块补注解只是在给假对象写类型。写成偏好而不是强制，是为了不把「这里没注解」变成返工理由（#997）。"
+expires_if = "注解覆盖率被定成强制项时删，或严格档收进全仓后并入 dev.types.strict-on-pure-modules。"
+
+[[rule]]
 id = "dev.stdio.single-exit"
 source = "CLAUDE.md#开发"
 check = "test:test_rules_guards::StdioGuards.test_stdio_utf8_single_exit"
@@ -237,7 +253,7 @@ expires_if = "官网改由构建产物生成、可以引外链时删。"
 [[rule]]
 id = "dev.switches.plan-and-readback"
 source = "CLAUDE.md#开发"
-check = "code:tool/fast.py:plan_switches"
+check = "code:tool/phone/toggler.py:plan_switches"
 status = "code"
 why = "目标选择、屏带过滤与 checked / kept / disabled 分散会让灰开关被当成没拨动（ADR-0008、ADR-0021）；off() 只做点击 → 回读 → 重试 → 报告，两个纯函数给出补点落点与回读结论。"
 expires_if = "拨动计划与回读合并成一个对象、调用方不再各自拼判定时删。"
@@ -345,6 +361,14 @@ check = "test:test_rules_guards::EngineGuards.test_android_replacement_layer"
 status = "enforced"
 why = "adb.py 按 adb 语义回答、bridge.py 是 shell 门面、inproc.py 在本进程跑脚本、u2.py 顶掉 uiautomator2（ADR-0019）；替换层与桌面依赖不一致时，引擎到手机上才第一次跑起来就红。守卫（#1002）查四个文件在不在、模块层公开名字少没少；正文第二句「新增读屏能力要先加进 u2.py 与 tool/reader.py 两边」它看不见，名字在而语义不对、或 APK 根本起不来也看不见（本仓库没有 JDK / Android SDK）。"
 expires_if = "手机版不再靠替换层跑引擎（例如改走真实 adb）时删。"
+
+[[rule]]
+id = "dev.android.smoke-entry"
+source = "CLAUDE.md#开发"
+check = "test:test_android_smoke::SmokeWorkflowTests.test_entry_point_and_ci_artifact_are_wired"
+status = "enforced"
+why = "维护者本机没有 Android 构建环境（无 JDK / Gradle / SDK 组件），每个改动只能等别人在真机上试；这一条命令把「这个提交的 APK 装得上、起得来」变成一次可复现的运行（#1071）。守卫钉住两头：脚本能当命令跑（`main` 与可注入执行器的 `smoke`），`android.yml` 用脚本要下载的那个名字（`debug-apk`）留下 APK——名字一改，脚本会静默下载不到、报成安装失败。执行段与还原在 #1072，本规则不覆盖。"
+expires_if = "CI 不再留产物、或真机冒烟改由手机版自带的自检承担时删。"
 
 [[rule]]
 id = "dev.tests.fixtures-single-assembly"
@@ -1083,9 +1107,9 @@ expires_if = "队列改由平台原生状态表达、不再靠标签区分时删
 [[rule]]
 id = "domain.confirm.residual-note-only"
 source = "CONTEXT.md#执行"
-check = "code:tool/fast.py:Phone"
+check = "code:tool/phone/screen.py:Screen"
 status = "code"
-why = "残留确认框把整页盖成遮罩，查找失败只剩「没找到」、渠道页只剩「开关 0 个」，读者会当成这一版没适配（#557）；顺手点掉它等于替脚本做了「要不要停」的决定，而这个决定属于脚本里的 require。residual_confirm() 只读、弹窗留着不动，_confirm_target() 返回坐标而不是动作；tests/test_residual_confirm_557.py 守的是那句说明挂得上去，不守「没点」。"
+why = "残留确认框把整页盖成遮罩，查找失败只剩「没找到」、渠道页只剩「开关 0 个」，读者会当成这一版没适配（#557）；顺手点掉它等于替脚本做了「要不要停」的决定，而这个决定属于脚本里的 require。residual_confirm() 只读、弹窗留着不动，Screen.confirm_target() 返回坐标而不是动作；tests/test_residual_confirm_557.py 守的是那句说明挂得上去，不守「没点」。"
 expires_if = "失败说明改由结构化诊断字段给出、脚本自己就能判断要不要点掉残留弹窗时删。"
 
 [[rule]]

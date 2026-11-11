@@ -104,10 +104,37 @@ class Clock:
         self.t += self.click_cost
 
 
+def clock_targets(module):
+    """换 `time` 时要一起换的模块：给的是 `fast` 就连两个基座与拨动会话一起（ADR-0033）。
+
+    只换门面那一份的话，`Screen.settle` 会按真实时间空转、假时间轴再也不推进。
+    """
+    targets = [module]
+    if getattr(module, "__name__", "") == "fast":
+        targets += [sys.modules[name] for name in ("phone.connection", "phone.screen", "phone.toggler")
+                    if name in sys.modules]
+    return targets
+
+
 def install_clock(module, clock):
-    """把这个时钟装进 fast / chan_fast：两个模块各自 import 了 time，要分别换。"""
-    module.time = clock
+    """把这个时钟装进 fast / chan_fast（以及它背后的基座与拨动会话），不还原。"""
+    for target in clock_targets(module):
+        target.time = clock
     return clock
+
+
+@contextlib.contextmanager
+def patched_clock(clock, module=None):
+    """同 `install_clock()`，但退出时把每个模块的 `time` 放回去：用例要连续跑几段、段间换钟时用它。"""
+    targets = clock_targets(module or sys.modules["fast"])
+    saved = [(target, target.time) for target in targets]
+    try:
+        for target in targets:
+            target.time = clock
+        yield clock
+    finally:
+        for target, value in saved:
+            target.time = value
 
 
 class Timeline:
@@ -176,24 +203,58 @@ def phone_stub(serial="test", shell=None, fast_mod=None, **fields):
     `shell` 顶替读屏库那条传输（签名 `(command, timeout=)`）；`serial` / `lost` 会写穿到 link 上。
     单元测试要一个「有 Phone 的形状、但没有手机」的对象时用它，装配只此一处。
 
-    声明在 `Phone.__init__` 里的状态在这里补默认值，和构造处保持一致——只有一处例外：
-    `pause_at_lock_check` 默认 False，因为假手机后面没有客户端在点「暂停」。
+    两个基座（ADR-0033）在这里一起装配：`conn` 归连接与生命周期，`screen` 归观测与视口几何，
+    门面只转发。它们只能用 `__new__` 造——`Connection.__init__` 要真连手机，`Screen.__init__`
+    要真读屏，假手机两样都不能做。
+    桩打在它所属的基座上，门面只是转发、内部调用绕过门面：观测与动作（`tree` / `focus` / `texts` /
+    `sig` / `settle` / `switch_rows` / `on_screen` / `click` / `back` / `scroll` / `scroll_more`）打
+    `p.screen`，连接与生命周期（`say` / `locked` / `wait_unlocked`）打 `p.conn`。要同时拦住门面上的
+    调用点（机型脚本直接写 `p.say(...)`）就两处一起桩。
+    三个会话对象（`lost_note` / `launch_session` / `channel_session`）与拨动会话（`toggler`）也在这里造；
+    它们的默认值归各自的类，这里不抄第二份。`changed` / `safe_mode` 归拨动会话，经门面的属性转发生效。
+    另有一处与构造处不同：`pause_at_lock_check` 默认 False，因为假手机后面没有客户端在点「暂停」。
     屏尺寸 `W` / `H` 与读屏 adapter `d` 不设默认：它们是每条用例的前提，由调用方传。
     """
     if fast_mod is None:
         load_tool()
         import fast as fast_mod
     p = fast_mod.Phone.__new__(fast_mod.Phone)
+    if hasattr(fast_mod, "Connection"):        # 对拍驱动也拿这份 fixtures 去喂拆分前的树（`compare_phone_state.py`）
+        p.conn = fast_mod.Connection.__new__(fast_mod.Connection)
+        p.screen = fast_mod.Screen.__new__(fast_mod.Screen)
+        p.screen.conn = p.conn
+    if hasattr(fast_mod, "LostNote"):          # 同上：会话对象的默认值由它自己的类给，这里不抄第二份
+        p.lost_note, p.launch_session, p.channel_session = (
+            fast_mod.LostNote(), fast_mod.LaunchSession(), fast_mod.ChannelSession())
+    if hasattr(fast_mod, "Toggler"):           # 拨动会话绑在假手机上：`off()` 内部走它，门面只转发
+        p.toggler = bind_toggler(p, fast_mod)
     p.link = fast_mod.adb_link.Connection(serial, transport=shell or _silent_shell)
-    p.log, p.miss, p.changed, p.missed, p.promoted = False, 0, [], [], set()
-    p.app = ""
-    p.pause_at_lock_check = False
-    p.systemui_text, p.vivo_seen, p.safe_mode = False, False, False
-    p.skeleton_sigs, p.skeleton_count = set(), 0
-    p.mismatch_probes = 0
+    p.log, p.pause_at_lock_check, p.systemui_text = False, False, False
+    p.changed, p.safe_mode = [], False
+    if not hasattr(fast_mod, "LostNote"):      # 旧树：这些字段直接落在实例上
+        p.miss, p.missed, p.promoted, p.app = 0, [], set(), ""
+        p.vivo_seen = False
+        p.skeleton_sigs, p.skeleton_count, p.mismatch_probes = set(), 0, 0
     for name, value in fields.items():
         setattr(p, name, value)
     return p
+
+
+def bind_toggler(phone, fast_mod):
+    """在一台门面或 Mock 替身上架一个拨动会话（#1040）：装配只此一处。
+
+    观测基座取 `phone.screen`（拆分前的树里就是门面自己）；真门面的丢失记录用它的
+    `lost_note`，Mock 替身上门面与基座是同一个对象，直接用它的字段——`off()` 内部照旧读写
+    同一批桩（`p.miss`、`p.missed`、`p.changed`）。
+    """
+    toggler = fast_mod.Toggler.__new__(fast_mod.Toggler)
+    toggler.screen = _base(phone, "screen")
+    if isinstance(phone, Mock):
+        toggler.lost_note = phone
+        toggler.safe_mode, toggler.changed = phone.safe_mode, phone.changed
+    else:
+        toggler.lost_note, toggler.safe_mode, toggler.changed = phone.lost_note, False, []
+    return toggler
 
 
 def job_stub(**fields):
@@ -217,14 +278,20 @@ def phone_mock(fast_mod=None, **fields):
     `vivo_seen` / `lost`）在真实方法里会被当成 True；`d` 与 `reader` 也会变成两个不相干的 Mock，而
     `Phone.start` 这类内部走 `reader`、配方脚本走 `p.d`。这里只补这两件事，其余照旧交给 Mock
     （`changed` 保持 Mock，用例可以数 `.append` 的次数）。
+
+    两个基座指向它自己（`p.conn = p.screen = p`）：机型脚本直接写 `p.tree()`，观测基座内部也写
+    `self.tree()`，两处要看到同一个桩，否则同一份页面得在两处各配一遍（ADR-0033）。
     """
     if fast_mod is None:
         load_tool()
         import fast as fast_mod
     p = Mock(name="Phone")
+    p.conn = p.screen = p      # 门面与两个基座是同一个 Mock：p.tree 与 p.screen.tree 是同一处桩
     p.pause_at_lock_check, p.systemui_text, p.vivo_seen, p.safe_mode = False, False, False, False
     p.lost = False              # Phone 上这是代理 link 的属性，Mock 上没有：不补就恒为真
     p.missed = []               # `report_run()` 读它：Mock 恒真会把干净的一轮判成失败（#788）
+    # 三个会话对象（#1039）不造：没有代码直接读 `p.lost_note` 这类对象本身，读的都是它的字段，
+    # 而字段在 Mock 上本来就是可写可读的替身。
     p.skeleton_sigs, p.skeleton_count = set(), 0
     p.mismatch_probes = 0
     p.reader = p.d = Mock(name="reader")
@@ -292,13 +359,26 @@ def _only_list(only):
     return [only] if isinstance(only, str) else list(only)
 
 
+_BASE_OWNED_ = {
+    "conn": ("locked", "wait_unlocked", "say", "check_alive", "close"),
+    "screen": ("focus", "tree", "texts", "sig", "settle", "switch_rows", "on_screen",
+               "click", "back", "scroll", "scroll_more"),
+}
+
+
+def _base(phone, name):
+    """门面背后的基座；拆分前的树里门面自己就是它（对拍驱动两种树都要能喂）。"""
+    return getattr(phone, name, phone)
+
+
 def fake_phone(clock=None, size=SIZES[0], stages=((0.0, EMPTY_PAGE),),
                focus=((0.0, ""),), fast_mod=None, **fields):
     """造一个不连手机的 Phone：读屏走时间轴，点击 / 返回只推进假时钟。
 
     只替掉会碰手机的部分；tree / sig / settle 等仍是真的，走 Device.dump_hierarchy。
     要换掉别的属性（想断言点击的坐标、想固定 locked）用关键字传进来，形如
-    fake_phone(locked=lambda: True)。
+    fake_phone(locked=lambda: True)——这些桩会同时落到它所属的基座上：门面只转发，
+    内部调用走的是基座（ADR-0033）。
     """
     clock = clock or Clock()
     timeline = Timeline(stages, focus)
@@ -306,18 +386,30 @@ def fake_phone(clock=None, size=SIZES[0], stages=((0.0, EMPTY_PAGE),),
     p = phone_stub("fake", shell=device.shell, fast_mod=fast_mod)
     p.W, p.H = size
     p.d = device
-    p.focus = lambda: timeline.focus_at(clock.t)
-    p.click = lambda *a, **k: clock.click()
-    p.back = lambda *a, **k: clock.click()
-    p.say = lambda *a, **k: None
+
+    def on_screen_base(name, value):
+        """动作桩落在观测基座：门面的 `click` / `scroll` 只是转发，拆分前后内部调用都落到这里。"""
+        setattr(_base(p, "screen"), name, value)
+
+    on_screen_base("click", lambda *a, **k: clock.click())
+    on_screen_base("back", lambda *a, **k: clock.click())
+
+    def silent(*a, **k):
+        return None
+
     p.dismiss = lambda *a, **k: None
     p.type_text = lambda text, *a, **k: (clock.click(), True)[1]
-    p.scroll = lambda *a, **k: None
-    p.scroll_more = lambda *a, **k: False
-    p.locked = lambda *a, **k: False
-    p.wait_unlocked = lambda *a, **k: True
-    for name, value in fields.items():
-        setattr(p, name, value)
+    on_screen_base("scroll", lambda *a, **k: None)
+    on_screen_base("scroll_more", lambda *a, **k: False)
+    stubs = {"focus": lambda: timeline.focus_at(clock.t), "say": silent,
+             "locked": lambda *a, **k: False, "wait_unlocked": lambda *a, **k: True}
+    stubs.update(fields)                       # 调用方给的桩压过默认值
+    for name, value in stubs.items():
+        owners = [base for base, names in _BASE_OWNED_.items() if name in names]
+        for base in owners:
+            setattr(_base(p, base), name, value)    # 基座拥有的只落基座：门面上再放一份会挡住后来的换桩
+        if not owners:
+            setattr(p, name, value)
     return p
 
 
