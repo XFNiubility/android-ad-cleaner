@@ -68,32 +68,32 @@ class RecipeSafetyTests(unittest.TestCase):
             self.assertNotIn(name, targets)
 
     def test_permission_denial_does_not_retry_with_privileges(self):
-        namespace = load()
+        """`open_app_settings` 走的是注入版（#1153）：闭包拿的是装载时的 Phone，
+        所以改装要在装载前把同一个对象传进去，不能再走 `__globals__["p"]`。"""
         phone = make_phone()
+        namespace = load(phone)
         phone.d.shell = lambda command: SimpleNamespace(output="Permission Denial: not exported")
         function = namespace["open_app_settings"]
-        function.__globals__["p"] = phone
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(function("example.app", "ExampleActivity", "设置"))
 
     def test_wait_page_rejects_out_of_screen_coordinates(self):
-        function = load()["wait_page"]
+        """`wait_page` 走注入版（#1148）：闭包拿的是装载时的 Phone，改装要在装载前把同一个对象传进去。"""
         phone = make_phone()
         phone.screen.focus = lambda: "example.app/ExampleActivity"
         phone.screen.tree = lambda: None
         phone.screen.texts = lambda root: [("设置", (0, 0, 100, 100), {"class": "TextView"})]
         phone.switches = lambda root: [("广告", True, (2294, 600))]
-        function.__globals__["p"] = phone
+        function = load(phone)["wait_page"]
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(function("ExampleActivity", "设置", timeout=0.01))
 
     def test_wait_page_rejects_consent_button(self):
-        function = load()["wait_page"]
         phone = make_phone()
         phone.screen.focus = lambda: "example.app/ExampleActivity"
         phone.screen.tree = lambda: None
         phone.screen.texts = lambda root: [("同意并继续", (0, 0, 100, 100), {"class": "android.widget.Button"})]
-        function.__globals__["p"] = phone
+        function = load(phone)["wait_page"]
         with contextlib.redirect_stdout(io.StringIO()):
             self.assertFalse(function("ExampleActivity", "设置", timeout=0.01))
 

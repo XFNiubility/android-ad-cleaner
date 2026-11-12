@@ -19,7 +19,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 import adb_link
 import fast
 import run
-from fixtures import fake_adb, phone_stub
+from fixtures import fake_adb, phone_stub, stub
 
 
 def phone():
@@ -152,7 +152,7 @@ class SwitchTests(unittest.TestCase):
 class InputTests(unittest.TestCase):
     def test_no_input_without_visible_focused_edit(self):
         p = phone()
-        p.edit_ready = Mock(return_value=False)
+        stub(p, "edit_ready", Mock(return_value=False))
         self.assertFalse(p.type_text("广告"))
         p.d.assert_not_called()
         p.d.shell.assert_not_called()
@@ -160,8 +160,8 @@ class InputTests(unittest.TestCase):
     @patch.object(fast.time, "sleep")
     def test_input_rpc_has_timeout_and_verifies_text(self, _sleep):
         p = phone()
-        p.edit_ready = Mock(return_value=True)
-        p.focused_text = Mock(return_value="广告")
+        stub(p, "edit_ready", Mock(return_value=True))
+        stub(p, "focused_text", Mock(return_value="广告"))
         self.assertTrue(p.type_text("广告", timeout=0.5))
         p.d.jsonrpc.setText.assert_called_once_with(p.d.return_value.selector, "广告", http_timeout=0.5)
         p.d.jsonrpc.setClipboard.assert_not_called()
@@ -169,9 +169,9 @@ class InputTests(unittest.TestCase):
     @patch.object(fast.time, "sleep")
     def test_failed_rpc_uses_bounded_clipboard_then_verifies(self, _sleep):
         p = phone()
-        p.edit_ready = Mock(return_value=True)
+        stub(p, "edit_ready", Mock(return_value=True))
         p.d.jsonrpc.setText.side_effect = TimeoutError()
-        p.focused_text = Mock(return_value="广告")
+        stub(p, "focused_text", Mock(return_value="广告"))
         self.assertTrue(p.type_text("广告", timeout=0.5))
         p.d.jsonrpc.setClipboard.assert_called_once_with(None, "广告", http_timeout=0.5)
         p.d.shell.assert_called_once_with("input keyevent KEYCODE_PASTE", timeout=0.5)
@@ -179,8 +179,8 @@ class InputTests(unittest.TestCase):
     @patch.object(fast.time, "sleep")
     def test_unverified_input_returns_false(self, _sleep):
         p = phone()
-        p.edit_ready = Mock(return_value=True)
-        p.focused_text = Mock(return_value="%%%%")
+        stub(p, "edit_ready", Mock(return_value=True))
+        stub(p, "focused_text", Mock(return_value="%%%%"))
         self.assertFalse(p.type_text("广告", timeout=0.5))
         # 退场交给调用方，type_text 不再自己按返回（#639）
         self.assertNotIn("input keyevent BACK", [c.args[0] for c in p.d.shell.call_args_list])
@@ -198,9 +198,10 @@ class InputTests(unittest.TestCase):
         def click(x, y):
             if y > 300:
                 selected.append((x, y))
-        p.click = Mock(side_effect=click)
-        p.type_text = Mock(side_effect=lambda text: typed.append(text) or True)
-        p.edit_ready = Mock(return_value=True)
+        p.clicked = Mock(side_effect=click)
+        stub(p, "click", p.clicked)                   # `setting()` 内部走观测基座
+        stub(p, "type_text", Mock(side_effect=lambda text: typed.append(text) or True))
+        stub(p, "edit_ready", Mock(return_value=True))
         p.screen.focus = lambda: "settings/result" if selected else "settings/search"
         def texts(root=None):
             nodes = (results or ([edit, result] if with_result else [edit])) if typed else [home]
@@ -215,7 +216,7 @@ class InputTests(unittest.TestCase):
         commands = [c.args[0] for c in p.reader.shell.call_args_list]
         self.assertIn("am start -f 0x10008000 -a oplus.intent.action.settings.MAIN_SEARCH", commands)
         self.assertNotIn("am start -f 0x10008000 -a android.settings.SETTINGS", commands)
-        self.assertEqual(p.click.call_count, 1)           # 只点结果，没有找框点框
+        self.assertEqual(p.clicked.call_count, 1)         # 只点结果，没有找框点框
 
     def test_unresolved_search_action_falls_back_to_the_settings_home(self):
         p = self.search_phone(True)
@@ -242,19 +243,19 @@ class InputTests(unittest.TestCase):
         p = self.search_phone(True, search_page=True, results=[edit, *rows])
         with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
             self.assertTrue(p.setting("广告", path="隐私 > 广告"))
-        self.assertEqual(p.click.call_args.args, (525, 625))
+        self.assertEqual(p.clicked.call_args.args, (525, 625))
 
     def test_search_does_not_treat_input_as_result(self):
         p = self.search_phone(False)
         with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
             self.assertFalse(p.setting("广告"))
-        self.assertEqual(p.click.call_count, 1)  # 只打开搜索框，没有再点输入文字
+        self.assertEqual(p.clicked.call_count, 1)  # 只打开搜索框，没有再点输入文字
 
     def test_search_selects_result_below_input(self):
         p = self.search_phone(True)
         with patch.object(fast.time, "time", side_effect=itertools.count(0, 0.2)), patch.object(fast.time, "sleep"):
             self.assertTrue(p.setting("广告"))
-        self.assertEqual(p.click.call_args.args, (525, 450))
+        self.assertEqual(p.clicked.call_args.args, (525, 450))
 
 
 class LaunchTests(unittest.TestCase):
@@ -325,7 +326,7 @@ class LaunchTests(unittest.TestCase):
           <node package="com.android.permissioncontroller" class="android.widget.Button" text="允许" bounds="[10,100][200,200]"/>
           <node package="com.android.permissioncontroller" class="android.widget.Button" text="拒绝" bounds="[10,300][200,400]"/>
         </hierarchy>'''))
-        p.click = Mock()
+        p.click = p.screen.click = Mock()       # 弹窗阶段经基座的动作原语点击，桩要落到 `p.screen`
         with patch.object(fast.time, "sleep"):
             self.assertEqual(p.dismiss(), "拒绝权限")
         p.click.assert_called_once_with(105, 350)
@@ -334,7 +335,7 @@ class LaunchTests(unittest.TestCase):
         p = phone(); p.screen.focus = Mock(return_value="com.android.permissioncontroller/.permission.ui.GrantPermissionsActivity")
         p.screen.tree = Mock(return_value=ET.fromstring('''<hierarchy><node package="com.android.permissioncontroller"
           class="android.widget.Button" text="允许" bounds="[10,100][200,200]"/></hierarchy>'''))
-        p.click = Mock()
+        p.click = p.screen.click = Mock()
         self.assertIsNone(p.dismiss())
         p.click.assert_not_called()
 
@@ -541,8 +542,8 @@ class TapIconTests(unittest.TestCase):
         p.screen.tree = Mock(return_value=ET.fromstring(self.PAGE))
         p.screen.focus = Mock(return_value="com.nearme.gamecenter/.Home")
         p.screen.sig = Mock(return_value="我的游戏")
-        p.click = Mock()
-        p.back = Mock()
+        stub(p, "click", Mock())       # 导航阶段经观测基座点击与返回，桩要落到 `p.screen`
+        stub(p, "back", Mock())
         return p
 
     def clock(self):
@@ -564,35 +565,36 @@ class TapIconTests(unittest.TestCase):
 
     def test_tap_icon_accepts_the_first_icon_when_the_target_text_appears(self):
         p = self.page_phone()
-        p.find = Mock(return_value=(5, 5))
+        stub(p, "find", Mock(return_value=(5, 5)))
         self.assertTrue(p.tap_icon("隐私开关设置"))
-        self.assertEqual([c.args for c in p.click.call_args_list], [(1030, 180)])
+        self.assertEqual([c.args for c in p.screen.click.call_args_list], [(1030, 180)])
         # 必须精确匹配：页面上本来就有「隐私政策」这类文字时，包含匹配会把第一次点击当成成功、不再回退
-        self.assertTrue(p.find.call_args.kwargs.get("exact"))
+        self.assertTrue(p.screen.find.call_args.kwargs.get("exact"))
 
     def test_tap_icon_goes_back_and_tries_the_next_icon_when_the_page_changes(self):
         p = self.page_phone()
         Clock = self.clock()
         p.screen.focus = Mock(side_effect=["home", "message", "message"])
-        p.find = Mock(side_effect=lambda *a, **k: (5, 5) if Clock.t > 2.5 else None)
+        stub(p, "find", Mock(side_effect=lambda *a, **k: (5, 5) if Clock.t > 2.5 else None))
         with patch.object(fast.time, "monotonic", Clock.monotonic), patch.object(fast.time, "sleep", Clock.sleep):
             self.assertTrue(p.tap_icon("隐私开关设置"))
-        self.assertEqual([c.args for c in p.click.call_args_list], [(1030, 180), (910, 180)])
-        p.back.assert_called_once()
+        self.assertEqual([c.args for c in p.screen.click.call_args_list], [(1030, 180), (910, 180)])
+        p.screen.back.assert_called_once()
 
     def test_tap_icon_gives_up_when_no_icon_opens_the_target(self):
         p = self.page_phone()
         Clock = self.clock()
-        p.find = Mock(return_value=None)
+        stub(p, "find", Mock(return_value=None))
         with patch.object(fast.time, "monotonic", Clock.monotonic), patch.object(fast.time, "sleep", Clock.sleep):
             self.assertFalse(p.tap_icon("隐私开关设置"))
-        self.assertEqual([c.args for c in p.click.call_args_list], [(1030, 180), (910, 180)])
-        p.back.assert_not_called()          # 页面没变就不 back，避免把用户留在别的页面
+        self.assertEqual([c.args for c in p.screen.click.call_args_list], [(1030, 180), (910, 180)])
+        p.screen.back.assert_not_called()   # 页面没变就不 back，避免把用户留在别的页面
 
     def test_tap_icon_prints_page_text_when_no_icon_works(self):
         p = self.page_phone()
         Clock = self.clock()
-        p.log, p.find = True, Mock(return_value=None)
+        p.log = True
+        stub(p, "find", Mock(return_value=None))
         p.screen.texts = Mock(return_value=[("我的游戏", (0, 0, 1, 1), None)])
         out = io.StringIO()
         with patch.object(fast.time, "monotonic", Clock.monotonic), patch.object(fast.time, "sleep", Clock.sleep), \

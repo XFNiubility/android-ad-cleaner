@@ -40,6 +40,14 @@ why = "`recipes/` 下两份社区配方的 `test_recipe.py` 定义了 21 个用�
 expires_if = "收集起点不再是 `-s tests`、或 CI 改成全仓发现用例时删。"
 
 [[rule]]
+id = "dev.tests.anchor-registry"
+source = "CLAUDE.md#开发"
+check = "test:test_test_collection::AnchorTests.test_the_real_tree_has_no_violation"
+status = "enforced"
+why = "三周里每来一张票就新建一个测试文件，`tests/` 长到 197 个，`fast` 被 62 个文件引用却没有一处能回答「这门面的行为契约是什么」，新票也没有落点于是继续新建（#1139）。守卫要求每个测试文件必须是已声明的锚点、或点名了某份机型脚本——两者之外即红，报红文案给出相近的锚点；锚点清单与 docs/agents/test-anchors.md 的表逐项对拍。"
+expires_if = "测试文件收成一个「行为 → 用例」的目录结构、新文件的位置由架构自动决定时删；`tests/` 不再是唯一收集起点时也删。"
+
+[[rule]]
 id = "dev.tests.interpreter-version"
 source = "CLAUDE.md#开发"
 check = "test:test_rules_guards::CiGuards.test_dev_tests_interpreter_version"
@@ -119,7 +127,7 @@ id = "dev.types.strict-on-pure-modules"
 source = "CLAUDE.md#开发"
 check = "none"
 status = "manual"
-why = "宽松档只查函数体内的表达式：一个没写返回类型的函数被调用方按返回值用时不会红，把 `str | None` 传给只收 `str` 的正则 `search()` 也要等真机走到那条分支。这六个模块不碰设备、不碰手机界面、不依赖假对象，注解补完能让调用方一起被查；其余引擎目录带假对象与注入作用域，全仓开严格档会撞上它们赖以灵活的形状（#997）。mypy 在 overrides 里把 `strict = true` 当全局设置，所以名单里是逐项 flag；整块删掉这些 override 时 mypy 仍绿（宽松档不要求注解），没有能返红的守卫，所以只记 manual。"
+why = "宽松档只查函数体内的表达式：一个没写返回类型的函数被调用方按返回值用时不会红，把 `str | None` 传给只收 `str` 的正则 `search()` 也要等真机走到那条分支。这九个模块不碰设备、不碰手机界面、不依赖假对象，注解补完能让调用方一起被查；其余引擎目录带假对象与注入作用域，全仓开严格档会撞上它们赖以灵活的形状（沿用 #997）。mypy 在 overrides 里把 `strict = true` 当全局设置，所以名单里是逐项 flag；整块删掉这些 override 时 mypy 仍绿（宽松档不要求注解），没有能返红的守卫，所以只记 manual。"
 expires_if = "这几类模块开始依赖假对象或注入作用域、严格档保持不住绿时删；或全仓改成严格档时并进 dev.types.narrow-scope-in-config。"
 
 [[rule]]
@@ -191,7 +199,7 @@ id = "dev.row.single-definition"
 source = "CLAUDE.md#开发"
 check = "code:tool/row.py:line"
 status = "code"
-why = "「哪一行是开关、哪一个才是它的本体」曾散在 off()、fast.switches()、chan_fast 与机型脚本各一份，灰开关与双列布局被点错（#480、#486、#530）；icon_hit 的本地副本已有 test_icon_hit_530 守着，其余只认这一份。"
+why = "「哪一行是开关、哪一个才是它的本体」曾散在 off()、fast.switches()、chan_fast 与机型脚本各一份，灰开关与双列布局被点错（#480、#486、#530）；按名字筛候选行的前置过滤也曾在 _recognise_inline 与 _enter_app_page 各写一份（#1120）；icon_hit 的本地副本已有 tests/test_entries.py 的 IconHitTests 守着，其余只认这一份。"
 expires_if = "读屏直接返回结构化的控件归属、不再从 bounds 推行的结构时删。"
 
 [[rule]]
@@ -267,9 +275,17 @@ why = "点名开关没出现时只报一句「未识别全部目标开关，未�
 expires_if = "开关名单断言并入引擎、机型脚本不再各自核对页面上有哪些标题时删。"
 
 [[rule]]
+id = "dev.steps.injection-surface"
+source = "CLAUDE.md#开发"
+check = "test:test_recipe_steps::CopyGuardTests.test_no_script_keeps_a_byte_identical_copy"
+status = "enforced"
+why = "34 簇段体被逐字复制了 80 份，改一处判据要改十几遍、漏一份就分叉（沿用 #1149 的簇账）；搬进注入面之后还要挡住一种半拉子状态：搬了代码没删副本，两边各跑一份。段体的模块常量必须留在脚本里按名字取——同名段体在不同脚本里取值不同，内联等于把两份数据并成一份错的（ADR-0035），这一条没有机械守卫，靠审查。"
+expires_if = "43 份脚本的段体全部搬完、仓库里不再有 `@step` 段体副本时，删这条反向守卫；`STEPS` 与这个注入面长期保留。"
+
+[[rule]]
 id = "dev.launch.foreground-ownership"
 source = "CLAUDE.md#开发"
-check = "test:test_launch_foreground_581::LaunchForegroundTests.test_one_frame_in_another_app_is_not_leaving"
+check = "test:test_phone_launcher::LaunchForegroundTests.test_one_frame_in_another_app_is_not_leaving"
 status = "enforced"
 why = "空焦点曾被判成「离开了目标 App」，启动段直接停段（#581、#193）；只有确认落在目标 App 时才读页面文字、关弹窗（ADR-0022）。"
 expires_if = "启动归属改由系统事件而不是逐帧焦点判定时删。"
@@ -317,7 +333,7 @@ expires_if = "渠道判定改成服务端规则、或机型脚本各自声明时
 [[rule]]
 id = "dev.navigation.bottom-tab"
 source = "CLAUDE.md#开发"
-check = "code:tool/fast.py:Phone"
+check = "code:tool/phone/navigator.py:Navigator"
 status = "code"
 why = "底部标签要在屏底带内按三层匹配找，退化成全屏文字匹配会点到同名列表项（ADR-0012）；它不重试不确认，需要文字确认的导航仍用 go()。"
 expires_if = "界面提供结构化的底部导航节点、不再靠文字匹配时删。"
@@ -327,13 +343,13 @@ id = "dev.ui.result-line-routing"
 source = "CLAUDE.md#开发"
 check = "test:test_rules_guards::EngineGuards.test_ui_result_line_routing"
 status = "enforced"
-why = "机器行进 results[].tail 会被当成结果摘要显示给用户；手机版的同一批摘要口径由 tests/summary_cases.json 钉住两边，_log() 的取舍与 tail 的边界没有守卫。守卫（#1002）拿同一份样例带机器行喂手机版 summarize()，摘要里出现 `#aac:` 就红；网页版那条同口径用例在 tests/js/client.test.js，注册表的 check 语法只能指一条。上游 `_log()` 漏不漏它看不见，只证明结果页自己剥得掉。"
-expires_if = "结果页改由结构化字段渲染、不再解析 tail 末行时删。"
+why = "机器行进 results[].tail 会被当成结果摘要显示给用户；摘要口径由 tests/summary_cases.json 钉住，_log() 的取舍与 tail 的边界没有守卫。守卫（沿用 #1002）拿同一份样例带机器行喂 tool/summary.py 的 summarize()——两个宿主调的就是这一份（#1189）——摘要里出现 `#aac:` 就红；网页版只剩「按后端字段渲染」的断言，不再有自己的摘要实现。上游 `_log()` 漏不漏它看不见，只证明摘要函数自己剥得掉。"
+expires_if = "摘要不再解析 tail 末行（引擎直接给结构化结局）时删。"
 
 [[rule]]
 id = "dev.ui.not-run-rows"
 source = "CLAUDE.md#开发"
-check = "test:test_not_run_steps_577::PlanTasksTests.test_channels_are_told_apart_unchecked_from_none_found"
+check = "test:test_plan::PlanTasksTests.test_channels_are_told_apart_unchecked_from_none_found"
 status = "enforced"
 why = "没勾的项曾从结果里整行消失，用户以为跑漏了（#577、ADR-0023）；三档原因取自 Api 的检测与扫描结果，不从 plan 的空字段反推。"
 expires_if = "结果页改由 plan 直接带 skip_reason 渲染时删。"
@@ -341,7 +357,7 @@ expires_if = "结果页改由 plan 直接带 skip_reason 渲染时删。"
 [[rule]]
 id = "dev.ui.retry-plan"
 source = "CLAUDE.md#开发"
-check = "test:test_retry_638::RetryableTests.test_only_step_the_device_failed_at_is_retryable"
+check = "test:test_result_retry::RetryableTests.test_only_step_the_device_failed_at_is_retryable"
 status = "enforced"
 why = "把「没执行」与「用户停止」的步骤也算进重试，会让它们变成失败并重复拨开关；广告开关步整段重跑则会重存快照、重拨已关的项（#638、ADR-0026）。"
 expires_if = "客户端不再提供重试、或引擎自己按段续跑时删。"
@@ -367,7 +383,7 @@ id = "dev.android.smoke-entry"
 source = "CLAUDE.md#开发"
 check = "test:test_android_smoke::SmokeWorkflowTests.test_entry_point_and_ci_artifact_are_wired"
 status = "enforced"
-why = "维护者本机没有 Android 构建环境（无 JDK / Gradle / SDK 组件），每个改动只能等别人在真机上试；这一条命令把「这个提交的 APK 装得上、起得来」变成一次可复现的运行（#1071）。守卫钉住两头：脚本能当命令跑（`main` 与可注入执行器的 `smoke`），`android.yml` 用脚本要下载的那个名字（`debug-apk`）留下 APK——名字一改，脚本会静默下载不到、报成安装失败。执行段与还原在 #1072，本规则不覆盖。"
+why = "维护者本机没有 Android 构建环境（无 JDK / Gradle / SDK 组件），每个改动只能等别人在真机上试；这一条命令把「这个提交的 APK 装得上、起得来、主流程点得通、手机还原得回去」变成一次可复现的运行（#1071、#1072、#1073）。守卫钉住两头：脚本能当命令跑（`main` 与可注入执行器的 `smoke`），`android.yml` 用脚本要下载的那个名字（`debug-apk`）留下 APK——名字一改，脚本会静默下载不到、报成安装失败。默认档走完整主流程，`--fast` 保留只跑执行段的那条路：界面文案改了会让认文字失效，兜底不能跟着一起没。"
 expires_if = "CI 不再留产物、或真机冒烟改由手机版自带的自检承担时删。"
 
 [[rule]]
@@ -405,7 +421,7 @@ expires_if = "手机版不再替换 uiautomator2 / adbutils 时删。"
 [[rule]]
 id = "dev.adb.pinned-platform-tools"
 source = "CLAUDE.md#开发"
-check = "test:test_reports_1029::GuiTests.test_pinned_adb_covers_every_platform"
+check = "test:test_tap_notice_regressions::GuiTests.test_pinned_adb_covers_every_platform"
 status = "enforced"
 why = "adb 版本漂移会让读屏输出一起变，出问题先要能排除 adb 版本；守卫只保证 ADB_PINNED 三个平台的条目名含 ADB_VERSION、校验值是 64 位十六进制，正文里的版本号与对 Google repository2-3.xml 的 SHA-1 核对仍靠人。"
 expires_if = "安装包自带 adb、客户端不再下载 platform-tools 时删。"
@@ -524,7 +540,7 @@ expires_if = "helper 的终止方式统一成一种、或调用方不再宽泛�
 
 [[rule]]
 id = "dev.fields.read-declared-directly"
-source = "CODING_STANDARDS.md#`Phone` 构造处声明的字段直接读，不用 `getattr` 兜底"
+source = "CODING_STANDARDS.md#`Phone` 与 `tool/phone/` 各对象构造处声明的字段直接读，不用 `getattr` 兜底"
 check = "test:test_declared_fields::DeclaredFieldTests.test_declared_fields_are_read_directly"
 status = "enforced"
 why = "#344 把六个字段收进 Phone 时，locked() 里留了一处 getattr 兜底，回归全绿，直到自查才发现声明与读取不一致。守卫只查 tool/ 里类自己 __init__ 声明过的字段（含 self.W, self.H 这类解包与 default= 关键字写法），范围外的 getattr（如上游库对象的 _process）不管；正文末句「Mock() 冒充走 fixtures.phone_mock()」没有守卫。"
@@ -591,7 +607,7 @@ id = "doc.release.followup-queue"
 source = "docs/agents/release-followup.md#每次发版后照做"
 check = "none"
 status = "manual"
-why = "新版不送到报告者手上，不复测催就永远关不掉 waiting-for-verify（#544、#560）：队列只有发版时过一次，漏一次就多一张永远开着的票。"
+why = "新版不送到报告者手上，不催复测就只能一直开着：队列只有发版时过一次，漏一次就多一张没人处理的票（沿用 #544、#560 的教训）。凭用例或现场能关的票在发版前就按 issue-tracker 的判据关掉，队列里剩下的正是真等真机的那批。"
 expires_if = "发版流程自动给报告者发复测通知时删。"
 
 [[rule]]
@@ -765,7 +781,7 @@ id = "doc.triage.waiting-for-verify-outranks"
 source = "docs/agents/triage-labels.md#Triage Labels"
 check = "ci:triage-audit"
 status = "enforced"
-why = "它和 ready-for-agent 的票外观一模一样：已修完的 #293 在 2026-10-29 还挂在 `ready-for-agent` 下，下一个会话随时可以拿它再实现一遍。定义、互斥与关票条件只在这里写，其余文档指过来。"
+why = "它和 ready-for-agent 的票外观一模一样：已修完的 #293 在 2026-10-29 还挂在 `ready-for-agent` 下，下一个会话随时可以拿它再实现一遍。定义与互斥只在这里写，关票判据在 issue-tracker 的「票的生命周期」，其余文档指过来。"
 expires_if = "issue 状态改由平台的原生状态机表达、标签不再承担这个语义时删。"
 
 [[rule]]
@@ -783,6 +799,14 @@ check = "test:test_stale_scan::MainTests.test_dry_run_lists_candidates_and_never
 status = "enforced"
 why = "`stale` 只在票没有前进时才该出现，而 GitHub 的 `updatedAt` 会被机器人、AI 评论和标签变更推到最近一次，读它等于永远等不到停摆的票；本机制只看末评作者与那条评论的服务器时间，一条评论都没有时从 `createdAt` 起算（#977）。加标只是把球在谁那边摆出来，报告者随时可能补上缺的信息，自动关闭会把还开得下去的票扫地出门；摘标又能恢复，所以关票留给维护者按现有信息判断（#978）。守卫是判定层只读：`--dry-run` 下除 `issue list` 外不发任何写命令。"
 expires_if = "GitHub 原生 stale 规则接管加标与摘标、标签不再代表维护者的判断时删。"
+
+[[rule]]
+id = "doc.triage.blocked-on-device"
+source = "docs/agents/triage-labels.md#Triage Labels"
+check = "test:test_followup::DiffTests.test_a_blocked_on_device_ticket_never_joins_the_queue"
+status = "enforced"
+why = "把「等一台我们没有的机器」混进复测队列，发版时就变成催不动的票：报告者验不了，队列也说不清为什么催了没反应；混进停摆扫描则把设备缺口误判成报告者不回话。人工打标、有新证据就摘，是因为「这台机器我们有没有」没有台账，自动判定只会猜错。已有行留着不删：删掉会连机型与要观察的输出一起丢，与「一半过期的合列行不删」同一条取舍（#989）。"
+expires_if = "本机设备台账稳定到能自动判定哪张票卡在缺的机器上时删。"
 
 [[rule]]
 id = "doc.triage.one-category-label"
@@ -883,6 +907,14 @@ why = "合入即关（需真机复测的例外，见 waiting-for-verify），否
 expires_if = "issue 与 PR 按平台原生关联自动关闭时删。"
 
 [[rule]]
+id = "doc.issue.close-on-evidence"
+source = "docs/agents/issue-tracker.md#票的生命周期"
+check = "none"
+status = "manual"
+why = "大量挂着 waiting-for-verify 的票其实用假页面或单测就能证明，却没有一条判据允许维护者凭它们关票，于是无限期挂着，积压不可度量；关票不写清凭哪种证据，后来的人分不清这次关闭是凭证据还是凭印象，口头确认还会被记成「已确认」。判据复用 dev.tests.behaviour-change-needs-red-test，不新造标准（#1123、#1127）。"
+expires_if = "关票由平台按关联证据自动判定、或 waiting-for-verify 不再靠人工关时删。"
+
+[[rule]]
 id = "doc.issue.ticket-is-spec"
 source = "docs/agents/issue-tracker.md#票的生命周期"
 check = "none"
@@ -941,6 +973,14 @@ expires_if = "仓库不再使用 /wayfinder、或它自带这份协议时删。"
 # ---- docs/agents/release.md ----
 
 [[rule]]
+id = "doc.release.outpack-then-release"
+source = "docs/agents/release.md#两个阶段"
+check = "none"
+status = "manual"
+why = "tag 是发版与 main 之间唯一的锚点。tag 若在发版那一刻打、必然指向当时的 main 尖端，main 就不能独立演进，发出去的也永远是最新代码而不是验证过的那一份；两段分开后，没进 tag 的改动不算这一版，进了 tag 的提交不能再改写（#1115）。"
+expires_if = "发版改由流水线按内容哈希出包、不再依赖 tag 时删。"
+
+[[rule]]
 id = "doc.release.two-readers"
 source = "docs/agents/release.md#两个落点，两个读者"
 check = "none"
@@ -969,7 +1009,7 @@ id = "doc.release.never-omit-unverified"
 source = "docs/agents/release.md#正文的格式"
 check = "none"
 status = "manual"
-why = "把「没有真机复测」写成「已验证」或「应该没问题」，报告者会跳过复测，问题留到下一版才被发现。"
+why = "把「没有真机复测」写成「已验证」或「应该没问题」，报告者会跳过复测，问题留到下一版才被发现；而笼统一句「没有真机复测」又分不出「有用例覆盖」与「只在模拟器上看过」，读者判断不了这一版的风险缺在哪一层。用计数或百分比描述这几层会变成过期的复合数（用例数那条见 doc.release.count-regression-once）。"
 expires_if = "每版都有真机复测、这句不再需要时删。"
 
 [[rule]]
@@ -1017,12 +1057,12 @@ id = "doc.release.apk-link-sync"
 source = "docs/agents/release.md#手机版 APK"
 check = "ci:assets"
 status = "enforced"
-why = "Release 里有 APK 而下载区还写「随下一版发布」，用户就找不到包；上传脚本按 Release 现有文件现算清单，链接不同步会让 Gitee 那一版多传的对象没人指向。`release-assets.yml` 的 `assets` job 每周取一次 Release 附件名与 `REL.files[].file` 比对，不一致就红并列出两边差集；取数失败走退出码 2，网络抖动不当成不一致。job 只盖 `index.html` 这一处：正文里的 README 下载区与 `docs/手机版教程/README.md` 的「下载」节它看不见，那两处仍靠人工（#1003）。"
+why = "Release 里有 APK 而下载区还写「随下一版发布」，用户就找不到包；上传脚本按 Release 现有文件现算清单，链接不同步会让 Gitee 那一版多传的对象没人指向。`release-assets.yml` 的 `assets` job 每周取一次 Release 资产与 `REL.files` 比对，文件名、大小与 sha 三类都查，不一致就红并分行列出两侧的值；取数失败走退出码 2，网络抖动不当成不一致。job 只盖 `index.html` 这一处：正文里的 README 下载区与 `docs/手机版教程/README.md` 的「下载」节它看不见，那两处仍靠人工（沿用 #1003）。"
 expires_if = "下载页改由 Release 资产自动渲染时删。"
 
 [[rule]]
 id = "doc.release.product-contract-check"
-source = "docs/agents/release.md#一轮发版的产物顺序"
+source = "docs/agents/release.md#出包点（维护者）"
 check = "none"
 status = "manual"
 why = "动了 `AGENTS.md` §1 的契约或实现侧对应的名单（`run.py` 的 NEVER、`polarity.NEG_PREFIX`、`off()` 的走向），用户侧 agent 的行为就变了；正文不提这一句，用户会在下一版发现步骤对不上。"
@@ -1030,7 +1070,7 @@ expires_if = "`AGENTS.md` 随实现自动生成、契约变化不再需要人工
 
 [[rule]]
 id = "doc.release.sha-and-credits-before-publish"
-source = "docs/agents/release.md#一轮发版的产物顺序"
+source = "docs/agents/release.md#发版动作（owner）"
 check = "none"
 status = "manual"
 why = "发布前不核对每个包（含 APK）与 `SHA256SUMS.txt` 一致，装不上的包会直接发出去；致谢名单同一刻核对，发布后再改只能编辑已公开的正文。"
@@ -1038,7 +1078,7 @@ expires_if = "校验清单改由流水线生成并比对时删。"
 
 [[rule]]
 id = "doc.release.apk-id-android"
-source = "docs/agents/release.md#一轮发版的产物顺序"
+source = "docs/agents/release.md#发版动作（owner）"
 check = "test:test_rules_guards::ReleaseGuards.test_doc_release_apk_id_android"
 status = "enforced"
 why = "APK 条目的 `id` 逐字写 `android`：卡片角标、手机端高亮与 `baidu_rows.py` 生成的安装说明都按它匹配，换一个 id 线上就看不到手机版。`ReleaseGuards.test_doc_release_apk_id_android` 冻结整个 id 集合，并顺带核对每条 `file` 的文件名里那段版本号等于 `REL.version`（#1003）。"
@@ -1046,18 +1086,18 @@ expires_if = "下载页不再用 id 区分平台时删。"
 
 [[rule]]
 id = "doc.release.gitee-portable-wording"
-source = "docs/agents/release.md#一轮发版的产物顺序"
+source = "docs/agents/release.md#发版动作（owner）"
 check = "none"
 status = "manual"
 why = "国内走 Gitee 时 Windows 访客只拿得到免安装版，它不替换也不卸载旧版；正文、下载页、README、docs/08 与 Gitee 发行版正文各覆盖自己那一处，页面写了不代表正文可以省；程序启动时的那条提示（#872）只在两个程序已经并存时出现，也不替代正文。"
 expires_if = "Gitee 也收 Windows 安装版、免安装版不再独占国内渠道时删。"
 
 [[rule]]
-id = "doc.release.changelog-close-last"
-source = "docs/agents/release.md#一轮发版的产物顺序"
+id = "doc.release.changelog-close-before-tag"
+source = "docs/agents/release.md#出包点（维护者）"
 check = "none"
 status = "manual"
-why = "验证行里是发版那一刻跑出来的数；提前写，rebase 之后正文与 CHANGELOG 会对不上同一个版本的两次读数。CHANGELOG 收口因此放在最后一步。"
+why = "验证行里是打 tag 那一刻跑出来的数；tag 之后再改这个提交（rebase、force-push），产物与源码就对不上了。收口因此放在出包点、打 tag 之前，而不是发版时（#1115）。"
 expires_if = "验证行由工件生成、不再手写时删。"
 
 # ---- docs/agents/release-followup.md ----
@@ -1109,7 +1149,7 @@ id = "domain.confirm.residual-note-only"
 source = "CONTEXT.md#执行"
 check = "code:tool/phone/screen.py:Screen"
 status = "code"
-why = "残留确认框把整页盖成遮罩，查找失败只剩「没找到」、渠道页只剩「开关 0 个」，读者会当成这一版没适配（#557）；顺手点掉它等于替脚本做了「要不要停」的决定，而这个决定属于脚本里的 require。residual_confirm() 只读、弹窗留着不动，Screen.confirm_target() 返回坐标而不是动作；tests/test_residual_confirm_557.py 守的是那句说明挂得上去，不守「没点」。"
+why = "残留确认框把整页盖成遮罩，查找失败只剩「没找到」、渠道页只剩「开关 0 个」，读者会当成这一版没适配（#557）；顺手点掉它等于替脚本做了「要不要停」的决定，而这个决定属于脚本里的 require。residual_confirm() 只读、弹窗留着不动，Screen.confirm_target() 返回坐标而不是动作；tests/test_phone_toggler.py 的残留确认框一组守的是那句说明挂得上去，不守「没点」。"
 expires_if = "失败说明改由结构化诊断字段给出、脚本自己就能判断要不要点掉残留弹窗时删。"
 
 [[rule]]
@@ -1139,7 +1179,7 @@ expires_if = "不再按 exec 跑脚本（改成 import 一个自带前导的模�
 [[rule]]
 id = "dev.recipes.safe-mode-page-wide-skip"
 source = "docs/04-给新机型写脚本.md#一段机型脚本长什么样"
-check = "test:test_safe_mode_page_wide_909::GuardTests.test_page_wide_segments_start_with_the_safe_mode_exit"
+check = "test:test_recipe_kit::WholePageStepGuardTests.test_page_wide_segments_start_with_the_safe_mode_exit"
 status = "enforced"
 why = "安全模式下 `off()` 只关点名的开关，整页关闭的段落一个都点不到；段落再回读「必须全关」就稳定记成失败，用户看到的是「没关掉」而不是「这段没做」（#909 的 PKT110 上报）。出口写成段体第一句，是因为写在后面等于先翻页、再判没关掉，失败现场与结论都指向错的环节。"
 expires_if = "安全模式不再限制整页关闭（能安全地按页面结构判断该关哪些）时删。"

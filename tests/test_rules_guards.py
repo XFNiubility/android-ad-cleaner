@@ -17,11 +17,12 @@
 `FixtureGuards` 落地时把那两个机型用例的本地假类换成了 `phone_stub()`，三条在旧树上是红的。
 
 引擎那两条：替换层只读 AST（不 import 手机版的模块，它们依赖只在手机上装得下的库），
-结果页喂 `tests/summary_cases.json` 的同一批样例给手机版的 `summarize()`；网页版那条在
-`tests/js/client.test.js`，跑的是真实的 `gui/web/index.html`（ADR-0017）。不需要 Android 设备或 JDK。
+结果页喂 `tests/summary_cases.json` 的同一批样例给 `tool/summary.py` 的 `summarize()`——两个宿主
+调的就是这一份（#1189）。网页版只剩「按后端字段渲染」的断言，跑真实的 `gui/web/index.html`
+（ADR-0017）。不需要 Android 设备或 JDK。
 
 发版产物那一条读 `index.html` 的源码：解析只走 `tool/release_assets.py`（定时 job 用同一份），
-不联网、不需要 GitHub 凭据；附件名集合与真实 Release 的比对在 `.github/workflows/release-assets.yml`。
+不联网、不需要 GitHub 凭据；与真实 Release 的名字、大小、sha 比对在 `.github/workflows/release-assets.yml`。
 """
 import ast
 import json
@@ -31,13 +32,14 @@ import sys
 import unittest
 from pathlib import Path
 
+sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "tool"))
 sys.path.insert(0, str(Path(__file__).resolve().parents[1] / "android" / "app" / "src" / "main" / "python"))
 sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from aac_android import view  # noqa: E402
 from test_rules_registry import ANCHOR as RULE_ANCHOR  # noqa: E402  同一份锚点口径，别再抄一份
 from test_rules_registry import read_rows, top_level_names  # noqa: E402
-from tool import events, release_assets  # noqa: E402
+from tool import events, release_assets, summary  # noqa: E402
 
 ROOT = Path(__file__).resolve().parents[1]
 
@@ -259,6 +261,38 @@ class CiGuards(unittest.TestCase):
                       f"没有 windows × {WINDOWS_PYTHON} 的回归 job，读到的是 {sorted(runs)}")
 
 
+class ReleaseWorkflowGuards(unittest.TestCase):
+    """发版动作只认显式的 tag（#1115）：推 tag 不触发构建，main 与已打的 tag 之间没有关系。"""
+
+    def text(self):
+        path = ROOT / ".github/workflows/build-windows.yml"
+        self.assertTrue(path.is_file(), f"{path} 不在，这条守卫会空转")
+        return path.read_text(encoding="utf-8")
+
+    def test_build_windows_only_by_dispatch_with_tag(self):
+        """不再由 `push: tags` 触发：tag 一推就自动出包，等于又回到「发版绑 main 尖端」的老路。
+
+        只留 `workflow_dispatch`，owner 发版时显式填要打的那个 tag。
+        """
+        text = self.text()
+        self.assertNotRegex(text, r"(?m)^\s{2}push:", "build-windows 不该再由 push 触发")
+        self.assertIn("workflow_dispatch:", text, "build-windows 要保留手动触发入口")
+        self.assertIn("tag:", text, "workflow_dispatch 要收一个 tag 输入")
+
+    def test_build_windows_checks_out_the_tag(self):
+        """手动触发时 checkout 必须钉到 `refs/tags/<输入>`。
+
+        不写 `ref` 时它取默认分支，也就是 main 尖端——打包出来的产物与 tag 无关。
+        """
+        self.assertIn("ref: refs/tags/${{ inputs.tag }}", self.text(),
+                      "build-windows 的 checkout 必须显式 fetch 输入的 tag")
+
+    def test_missing_release_does_not_fail_the_build(self):
+        """Release 草稿还不存在时只跳过上传：owner 可能先跑构建、后建草稿。"""
+        self.assertNotIn("请先创建对应的 Release 草稿", self.text(),
+                         "Release 不存在不该让构建失败，产物留在 artifact 里即可")
+
+
 class DocGuards(unittest.TestCase):
     def test_doc_changelog_one_line_entry(self):
         """`## 未发布` 段每条挂一个编号、正文不超过 80 字（展开就成段落，把用户说明塞回 CHANGELOG）。
@@ -359,7 +393,7 @@ UNANCHORED_BOUND = {
     "docs/agents/domain.md": 2,
     "docs/agents/issue-tracker.md": 20,
     "docs/agents/release-followup.md": 0,
-    "docs/agents/release.md": 12,
+    "docs/agents/release.md": 13,
     "docs/agents/triage-labels.md": 0,
 }
 
@@ -441,9 +475,9 @@ REPLACEMENT_LAYER = {
               "connect", "display", "install", "matches", "read_failed", "select_all", "text_of"),
 }
 
-# 结果页要挡住的机器行记号：唯一来源是 tool/events.py 的两个前缀，它们的公共前缀就是两处
-# summarize() 该剥掉的那一段。手机版与网页版都只能写死这个字面量（屏幕上没有 tool/ 可 import），
-# 由本文件把它和 events.py 拴住：改前缀而不同步，这条与样例的漂移检查都会红。
+# 结果页要挡住的机器行记号：唯一来源是 tool/events.py 的两个前缀，它们的公共前缀就是摘要函数
+# （tool/summary.py）该剥掉的那一段。两个宿主调同一份实现，由本文件把它和 events.py 拴住：
+# 改前缀而不同步，这条与样例的漂移检查都会红。
 MACHINE_TOKEN = os.path.commonprefix([events.PREFIX, events.PAYLOAD_PREFIX])
 
 
@@ -451,31 +485,31 @@ class EngineGuards(unittest.TestCase):
     def test_ui_result_line_routing(self):
         """结果页的摘要不许出现引擎的机器行（`tool/events.py` 的 PREFIX / PAYLOAD_PREFIX）。
 
-        两条同口径用例：本条（`EngineGuards.test_ui_result_line_routing`）喂 `aac_android/view.py`
-        的 `summarize()`，`tests/js/client.test.js` 的「完成页摘要把机器行挡在外面（#1002）」
-        真跑 jsdom 里 `gui/web/index.html` 的同名函数；两端读同一份 `tests/summary_cases.json`。
-        `gui/app.py` 的 `_log()` 今天已经把两类行挡在外面，但只要有一处漏进 `tail`，用户看到的
-        就是 `#aac:payload {"…"}`——两处 summarize 各自再剥一次。期望串本身由
-        `tests/test_android_view.py::SummarizeTest.test_shared_cases_with_web_client` 守，这里只管漏没漏。
+        喂 `tool/summary.py` 的 `summarize()`（两个宿主共用，ADR-0019 的增补段）。`gui/app.py` 的
+        `_log()` 今天已经把两类行挡在外面，但只要有一处漏进 `tail`，用户看到的就是
+        `#aac:payload {"…"}`——摘要函数自己再剥一次。期望串本身由 `tests/test_summary.py` 的
+        共享样例集守，这里只管漏没漏。
         """
         cases = json.loads((ROOT / "tests" / "summary_cases.json").read_text(encoding="utf-8"))
         self.assertTrue(cases, "一份样例都没有，这条守卫会空转")
         fixtures = [line for case in cases for line in case.get("machine", [])]
         self.assertTrue(fixtures, "样例里一条机器行都没有，这条守卫吵不到任何人")
-        self.assertEqual(view.MACHINE_PREFIX, MACHINE_TOKEN,
-                         "手机版剥掉的记号要和 tool/events.py 的前缀对得上")
+        self.assertEqual(summary.MACHINE_PREFIX, MACHINE_TOKEN,
+                         "摘要函数剥掉的记号要和 tool/events.py 的前缀对得上")
+        self.assertEqual(view.FALLBACK_MACHINE_PREFIX, MACHINE_TOKEN,
+                         "工具目录不可用时手机版的兜底记号也要和事件前缀对得上")
         stray = [line for line in fixtures if not line.startswith(MACHINE_TOKEN)]
         self.assertEqual(stray, [],
                          f"样例里的机器行要以 {MACHINE_TOKEN!r} 开头"
                          "（前缀的唯一来源是 tool/events.py）：\n" + "\n".join(stray))
         for case in cases:
             with self.subTest(case=case["name"]):
-                got = view.summarize({"tail": list(case["tail"]) + list(case.get("machine", []))})
+                got = summary.summarize({"tail": list(case["tail"]) + list(case.get("machine", []))})
                 leaked = [line for line in got.splitlines() if line.startswith(MACHINE_TOKEN)]
                 self.assertEqual(leaked, [], "结果页不能显示引擎的机器行")
         for line in (events.PREFIX + '{"kind": "ui_busy"}',
                      events.PAYLOAD_PREFIX + '{"skeleton": "<node text=…>"}'):
-            self.assertEqual(view.summarize({"tail": ["开始执行", line]}), "开始执行",
+            self.assertEqual(summary.summarize({"tail": ["开始执行", line]}), "开始执行",
                              "按 events.py 的两个前缀现造的机器行也要挡住")
 
     def test_android_replacement_layer(self):
@@ -505,7 +539,7 @@ PHONE_CONSTRUCTED = ("Phone", "FakePhone")
 PHONE_CONSTRUCTION_FROZEN = {
     "fixtures.py",              # 装配的唯一定义处：今天走 Phone.__new__，命中不到，留给改用构造器之后
     "test_engine_events.py",    # 刻意构造真 Phone 触发构造期失败（以下三份同）
-    "test_error_logs_1028.py",
+    "test_lock_and_disconnect_regressions.py",
     "test_ui_session.py",
     "test_harmony_client.py",   # 鸿蒙引擎自己的 Phone 类（hdc 传输，ADR-0019）
     "test_harmony_engine.py",
@@ -584,7 +618,7 @@ class FixtureGuards(unittest.TestCase):
         低于多出一个绕开装配的文件。清单只许减——修好一处就从这里删掉文件名，不会因此在红。
 
         豁免四类：`fixtures.py` 是装配的唯一定义处；`test_phone_interface.py` 测的就是 `Phone` 本体；
-        `test_engine_events.py` / `test_error_logs_1028.py` / `test_ui_session.py` 刻意构造真 `Phone`
+        `test_engine_events.py` / `test_lock_and_disconnect_regressions.py` / `test_ui_session.py` 刻意构造真 `Phone`
         去触发 `connect` / `__init__` 的失败路径，`phone_stub()` 绕开构造期，用不了；
         `test_harmony_engine.py` / `test_harmony_client.py` 是鸿蒙引擎自己的 `Phone` 类（hdc 传输，
         ADR-0019），与 `fast.Phone` 的装配不是一件事。
@@ -746,7 +780,7 @@ class StubGuards(unittest.TestCase):
         #1022 票面按一个只认四条断言形态的正则量到「2 处」；那个正则漏了多参数 `patch.object`、
         单引号与「收集后统一断言」的写法。按本条判据重算（每个函数自身作用域里的 `as NAME`
         绑定）：`tests/` 全库 14 处、13 个函数、6 份文件，全部有后续使用，没有真哑桩。
-        票面设想的豁免（`test_adapt_survey_690.py` 的 `run_cmd <- factory`、`forward <- shell`）
+        票面设想的豁免（`test_adapt_cli.py` 的 `run_cmd <- factory`、`forward <- shell`）
         都是 `self.factory = factory` 形态，按本条判据本来就绿，所以 `STUB_ALLOW` 今天为空。
 
         已知漏口：只认裸名 `patch(...)` / `patch.object(...)`，`unittest.mock.patch(...)` 这类

@@ -13,9 +13,11 @@
 没有出处的不写进来：猜的包名、页面名会让引擎跳到别处。快应用不在这里——它按包名与设置项处理，
 见 run.py 的 `QUICKAPP` 与 vivo 的 `switch_quick_app_service`，不走界面。
 """
-import shlex
 import re
+import shlex
 from dataclasses import dataclass
+
+import recipe_source
 
 # 品牌（ro.product.brand 小写）→ 家族。run.py 的广告包、参考脚本与版本比较都用这一份，别再另建。
 FAMILY = {
@@ -33,8 +35,12 @@ LABEL = {"xiaomi": "小米", "oppo": "OPPO", "vivo": "vivo", "honor": "荣耀",
 # 或桌面。落在这里说明主题设置不可达，段体按跳过收尾（#902）。
 THEME_DEAD_ENDS = frozenset({"com.xiaomi.market", "com.miui.home"})
 
-# NEW_TASK | CLEAR_TASK，与 Phone._launch 同值：直达与公开 Intent 都带它。
+# NEW_TASK | CLEAR_TASK，与 Launcher._launch 同值：直达与公开 Intent 都带它。
 CLEAR_TASK = "0x10008000"
+
+# ColorOS 商店 / 浏览器共用的公开设置 Intent。条目表与 used_by() 的源码扫描都取这一份，
+# 改动作名时两边不会脱节（那边认不出就会静默少几台机）。
+APP_SETTINGS_ACTION = "oppo.intent.action.APP_SETTINGS"
 
 
 @dataclass(frozen=True)
@@ -123,14 +129,14 @@ ENTRIES = {
             menu="软件商店 → 我的 → 右上齿轮",
             direct=(Direct("com.heytap.market",
                            "com.heytap.market.mine.cn.setting.ui.SettingActivity",
-                           action="oppo.intent.action.APP_SETTINGS"),),
+                           action=APP_SETTINGS_ACTION),),
             app="com.heytap.market",
             note="公开设置 Intent 直接落到设置页，绕开含账号信息的「我的」页；PJA110 旧版商店的落点是 "
                  "`com.heytap.market.mine.ui.SettingActivity`（没有 `.cn.`），与本档不同，那条照菜单走"),
         "浏览器": Entry(
             menu="浏览器 → 底部 ☰ 或「我的」→ 设置",
             direct=(Direct("com.heytap.browser", ".settings.component.BrowserPreferencesPage",
-                           action="oppo.intent.action.APP_SETTINGS"),
+                           action=APP_SETTINGS_ACTION),
                     Direct("com.heytap.browser", ".settings.component.BrowserPreferencesPage",
                            keep_task=True)),
             note="带清栈参数用 `-n` 启动会立刻退出，这一档只能裸 am start；首页切成「简洁」后没有「我的」和菜单（#165）"),
@@ -286,106 +292,74 @@ def source_key(d):
     return ("direct", d.pkg, full(d.pkg, d.activity))
 
 
-# 脚本里的赋值，用来把 `p.start(package, …)` 还原成包名。
-_ASSIGN = re.compile(r'^[ \t]*(\w+)[ \t]*=(?!=)[ \t]*(.*?)[ \t]*$', re.M)
-_LITERAL = re.compile(r'^"([\w.$]*)"$|^\'([\w.$]*)\'$')
+# 一条拉起命令里的页面与公开 Intent：脚本里的几种写法（字面量、拼接变量、模板常量的
+# `.format(…)`）由事实层先把字符串还原出来，这里只认还原后的整条命令。
+_AM_PAGE = re.compile(r"am start\b[^\n]*?-n\s+([\w.]+)/([\w.$]+)")
+_AM_INTENT = re.compile(r"am start\b[^\n]*?-a\s+([\w.]+)[^\n]*?-p\s+([\w.]+)")
+# 拉起入口的调用名：Phone.start 与共享的 start_or_skip 助手（沿用 #902）。
+_START_CALLS = frozenset({"p.start", "start_or_skip"})
 
 
-def _arg_at(token, src, pos):
-    """一个实参：字面量，或在这个位置之前最后一次赋值的名字——那次赋值必须也是字面量。认不出来返回 None。
-
-    按位置取最后一次赋值：同一个脚本里 `package` 每段都会重新赋值，取全文件的最后一份会张冠李戴。
-    最后一次赋值不是字面量（`package = helper()`）时返回 None，不退回更早的旧值：那样会记成别的包。
-    """
-    token = token.strip()
-    if token.startswith("activity="):
-        token = token[len("activity="):].strip()
-    if len(token) >= 2 and token[0] == token[-1] and token[0] in "\"'":
-        return token[1:-1]
-    if not token.isidentifier():
+def _value(arg):
+    """一个实参解析出的单个取值。入口这一侧不复刻旧的形参回填：形参实参算未解析（#1197 接线口径）。"""
+    if arg is None or arg.param is not None or not arg.values:
         return None
-    value = None
-    for m in _ASSIGN.finditer(src, 0, pos):
-        if m.group(1) != token:
-            continue
-        lit = _LITERAL.match(m.group(2))
-        value = (lit.group(1) if lit.group(1) is not None else lit.group(2)) if lit else None
-    return value
+    return arg.values[0].text
 
 
-_DEF = re.compile(r"^([ \t]*)def[ \t]+(\w+)[ \t]*\(([^)]*)\)", re.M)
-_TEMPLATE = re.compile(r"^[ \t]*(\w+)[ \t]*=[ \t]+([\"'])((?:(?!\2).)*)\2", re.M)
-_FORMAT = re.compile(r"\b(\w+)\.format\(\s*([\w.]+)\s*\)")
-# 公开 Intent 入口：`am start … -a <action> … -p <包名>`。包名有三种写法：字面量、
-# 拼接的变量（`-p " + package`）、模板常量的 `{}` 在别处 `.format(…)` 传进来。
-_INTENT = re.compile(
-    r"am start[^\"']*?-a\s+([\w.]+)[^\"']*?-p\s+(?:([\w.$]+)|\{\}|[\"']\s*\+\s*(\w+))")
+def _arg_of(call, index, keyword=None):
+    """第 index 个位置实参；不够时退回同名关键字实参（`p.start(pkg, activity=…)`）。
+
+    `keyword is None` 时不做关键字回退：位置实参的 `keyword` 也是 None，回退会把它自己
+    当成第二个实参，单实参的调用就凭空多出一档入口。"""
+    positional = [arg for arg in call.args if arg.keyword is None]
+    if index < len(positional):
+        return positional[index]
+    if keyword is None:
+        return None
+    for arg in call.args:
+        if arg.keyword == keyword:
+            return arg
+    return None
 
 
-def _enclosing_def(src, pos):
-    """包住这一行的函数定义：位置之前、缩进比这一行列浅的最近一个。"""
-    line_start = src.rfind("\n", 0, pos) + 1
-    column = len(src[line_start:pos].expandtabs())
-    found = None
-    for m in _DEF.finditer(src, 0, pos):
-        if len(m.group(1).expandtabs()) < column:
-            found = m
-    return found
+def _scan_command(text, model, found):
+    """一条已还原的拉起命令里的入口：`-n 包名/页面` 记直达，`-a 动作 … -p 包名` 记公开 Intent。"""
+    for m in _AM_PAGE.finditer(text):
+        found.setdefault(("direct", m.group(1), full(m.group(1), m.group(2))), set()).add(model)
+    for m in _AM_INTENT.finditer(text):
+        found.setdefault(("intent", m.group(1), m.group(2)), set()).add(model)
 
 
-def _param_values(name, src, pos):
-    """变量是外层函数的形参时，从调用它的地方取对应实参：机型脚本常把包名往助手函数里传一层。"""
-    m = _enclosing_def(src, pos)
-    if not m:
-        return []
-    params = [p.split("=")[0].strip() for p in m.group(3).split(",")]
-    if name not in params:
-        return []
-    index = params.index(name)
-    values = []
-    for call in re.finditer(rf"\b{re.escape(m.group(2))}\s*\(([^)]*)\)", src):
-        if call.start() < m.end():
-            continue
-        parts = call.group(1).split(",")
-        value = _arg_at(parts[index], src, call.start()) if index < len(parts) else None
-        if value:
-            values.append(value)
-    return values
+def _scan_entries(facts, model, found):
+    """从一份事实里认出这台机用过的入口：脚本自身的源码，或它调用到的注入面实现。"""
+    for call in facts.calls:
+        if call.name in _START_CALLS:
+            pkg, act = _value(_arg_of(call, 0)), _value(_arg_of(call, 1, "activity"))
+            if pkg and act:
+                found.setdefault(("direct", pkg, full(pkg, act)), set()).add(model)
+        elif call.name == "p.setting":
+            keyword = _value(_arg_of(call, 0))
+            if keyword:
+                found.setdefault(("search", keyword, _value(_arg_of(call, 1)) or keyword),
+                                 set()).add(model)
+        elif call.name == "open_app_settings":
+            pkg, page = _value(_arg_of(call, 0)), _value(_arg_of(call, 1))
+            if pkg and page:
+                found.setdefault(("intent", APP_SETTINGS_ACTION, pkg), set()).add(model)
+        for arg in call.args:
+            for item in arg.values:
+                _scan_command(item.text, model, found)
 
 
-def _named(src, name, pos):
-    """一个变量在这个位置的值：同文件里最后一次字面量赋值，或它是外层形参时调用处传的实参。"""
-    if not name.isidentifier():
-        return []
-    value = _arg_at(name, src, pos)
-    return [value] if value else _param_values(name, src, pos)
-
-
-def _template_owner(src, pos, action):
-    """`-p {}` 这种模板的常量名：它的包名在别处用 `.format(…)` 补上。赋值行包住 pos，不能拿 pos 截断。"""
-    owner = None
-    for m in _TEMPLATE.finditer(src):
-        if m.start() < pos and action in m.group(3) and "-p {}" in m.group(3):
-            owner = m.group(1)
-    return owner
-
-
-def _intent_packages(src, m):
-    """一条 Intent 拉起命令里 `-p` 的包名；认不出来返回空。"""
-    if m.group(2):
-        token = m.group(2)
-        # 包名一定带点；没有点的是变量名（`-p package`），照变量还原
-        return [token] if "." in token else _named(src, token, m.start())
-    if m.group(3):
-        return _named(src, m.group(3), m.start())
-    owner = _template_owner(src, m.start(), m.group(1))
-    if not owner:
-        return []
-    out = []
-    for call in _FORMAT.finditer(src):
-        if call.group(1) == owner:
-            out += _named(src, call.group(2), call.start())
-    return out
+def _bindings(calls):
+    """脚本调注入助手时按位置传的实参：实参在脚本里、形参在实现里，事实层按位置把两侧合起来。"""
+    out = {}
+    for call in calls:
+        for index, arg in enumerate(arg for arg in call.args if arg.keyword is None):
+            if arg.param is None and arg.values:
+                out.setdefault(index, []).extend(item.text for item in arg.values)
+    return {index: tuple(texts) for index, texts in out.items()}
 
 
 def used_by(recipes_dir):
@@ -395,33 +369,30 @@ def used_by(recipes_dir):
     `p.start(package, ".X")` 这种先赋值再传变量的写法也要认出来：honor-WKL-AN20 就是这么写的，
     只认字面量会把它的机型漏掉（生成表里「用过的机型」少一台）。经共享入口助手
     `start_or_skip(package, ".X", …)` 拉起的那几条同样是这台机用过的直达（#902）。
-    `am start -a <action> -p <包名>` 这类公开 Intent 入口单记一档（#956）。
+    `am start -a <action> -p <包名>` 这类公开 Intent 入口单记一档（#956）；
+    经 `open_app_settings(包名, 页面, …)` 打开的那一类同样是直达（它包着 APP_SETTINGS 的 Intent）。
+
+    搬进注入面（`tool/recipe_nav.py` 与 `tool/recipe_steps.py`）的实现，入口写在实现里、脚本只剩
+    一行调用：脚本调用了哪个注入名，就把那份实现也扫一遍，否则「用过的机型」会静默漏掉（沿用 #1153 的做法）。
+    包名这类实参仍在脚本里（`app_settings(MARKET)`），形参在实现里，按位置把两侧合起来才还原得出
+    包名（沿用 #1154 的做法）；段体按名字取的模块常量以 `externals` 交回去（#1209）。定义了本地
+    同名实现的脚本走本地那份，不扫注入版（`injected_calls()` 判这一条）。
+
+    命令串只从调用的实参里取：变量、拼接与模板常量都还原得到，没被任何调用引用的字符串常量不算
+    出处；语法错的脚本经事实层直接抛 `SyntaxError`，不再静默少算（沿用 #1195 的口径）。
 
     只认字面量：经 `reach(p, ENTRIES[...])` 消费的那几条（浏览器段，#912）看不出来，
     这张表会把用得上的机型算成没用过。"""
-    import glob, os
+    injected = recipe_source.injected_sources()
     found = {}
-    for f in glob.glob(os.path.join(recipes_dir, "*", "recipe*.py")):
-        model = os.path.basename(os.path.dirname(f)).split("-", 1)[-1]
-        with open(f, encoding="utf-8") as fh:
-            src = fh.read()
-        for call in re.finditer(r"(?:p\.start|start_or_skip)\(([^)]*)\)", src):
-            parts = call.group(1).split(",")
-            pkg = _arg_at(parts[0], src, call.start())
-            act = _arg_at(parts[1], src, call.start()) if len(parts) > 1 else None
-            if pkg and act:
-                found.setdefault(("direct", pkg, full(pkg, act)), set()).add(model)
-        for m in re.finditer(r'am start[^"\']*?-n\s+([\w.]+)/([\w.$]+)', src):
-            found.setdefault(("direct", m.group(1), full(m.group(1), m.group(2))), set()).add(model)
-        for m in _INTENT.finditer(src):
-            for pkg in _intent_packages(src, m):
-                found.setdefault(("intent", m.group(1), pkg), set()).add(model)
-        for call in re.finditer(r"p\.setting\(([^)]*)\)", src):
-            parts = call.group(1).split(",")
-            kw = _arg_at(parts[0], src, call.start())
-            result = _arg_at(parts[1], src, call.start()) if len(parts) > 1 else kw
-            if kw:
-                found.setdefault(("search", kw, result or kw), set()).add(model)
+    for rel, facts in recipe_source.scan_dir(recipes_dir).items():
+        model = rel.split("/", 1)[0].split("-", 1)[-1]
+        _scan_entries(facts, model, found)
+        for name, impl in injected.items():
+            calls = recipe_source.injected_calls(facts, name)
+            if calls:
+                _scan_entries(recipe_source.scan_source(impl, _bindings(calls),
+                                                        externals=facts.constants), model, found)
     return found
 
 
@@ -430,7 +401,7 @@ def open_direct(p, d, settle=1.2):
     Intent 档与带清栈参数就会自己退出的页面（`keep_task`）裸启动，失败时照样抛出。
     打不开由 reach() 记一笔换下一档。
 
-    页面名按字面量传下去：走 `Phone.start` 的那条由 `Phone._launch` 在 shell 边界引用一次，
+    页面名按字面量传下去：走 `Phone.start` 的那条由 `Launcher._launch` 在 shell 边界引用一次，
     这里再 quote 一层会让 used_by() 的源码扫描认不出机型（#667）；裸启动那两条不经
     `Phone.start`，引用由 `start_command()` 做。"""
     if not d.action and not d.keep_task:

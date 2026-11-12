@@ -13,38 +13,6 @@ VERIFIED_SWITCHES = 0
 
 def tap_any(*names, scrolls=6):
     return any(maybe(name, scrolls) for name in names)
-
-
-def gear(toolbar_only=False):
-    """很多小米 App 的设置是右上角齿轮图标，没有文字。
-    匹配只认正好是「设置」的描述、正文或 setting 类 id：商店「我的」页有一行正文「去功能设置里
-    重新开启」，主题商店有「设置壁纸」，按包含匹配会先命中它们、点进别的子页，整段跑空（#305 / #374）。"""
-    from fast import bounds, icon_hit
-
-    for n in p.tree().iter("node"):
-        l, t, r, b = bounds(n)
-        icon = "ImageView" in n.get("class", "") and r - l < p.W * 0.25 and b - t < p.H * 0.15
-        if (icon_hit(n) and (n.get("clickable") == "true" or icon) and p.on_screen(n)
-                and (not toolbar_only or b < p.H * 0.23)):
-            p.click((l + r) // 2, (t + b) // 2)
-            time.sleep(1)
-            return True
-    if not toolbar_only and p.find("设置", exact=True, edge_ok="tab"):
-        return p.tap("设置", exact=True, scrolls=0)
-    for n in p.tree().iter("node"):
-        key = (n.get("content-desc") or "") + " " + (n.get("resource-id") or "")
-        from fast import bounds
-        l, t, r, b = bounds(n)
-        if (any(k in key.lower() for k in ("更多", "more", "menu"))
-                and n.get("clickable") == "true" and p.on_screen(n) and b < p.H * 0.22):
-            p.click((l + r) // 2, (t + b) // 2)
-            time.sleep(0.5)
-            if p.tap("设置", exact=True, scrolls=0):
-                return True
-            break
-    return False
-
-
 def mine_settings(tries=2):
     """底栏「我的」→ 「设置」，点完必须认出设置页（#586）。
 
@@ -61,45 +29,6 @@ def mine_settings(tries=2):
         stopped = p.focus()
         p.back()
     raise RuntimeError(f"浏览器设置页没有打开；停在 {stopped}")
-
-
-def security_tab():
-    """HyperOS 3 的「安全」是隐私页上方的标签，不是设置行。
-    按文字点会命中不可点击的标签文字；这里只点横跨半屏、位于顶部的可点击容器。"""
-    for text, (l, t, r, b), node in p.texts():
-        if (text == "安全" and node.get("clickable") == "true"
-                and r - l > p.W * 0.3 and t < p.H * 0.25):
-            p.click((l + r) // 2, (t + b) // 2)
-            time.sleep(0.8)
-            return True
-    return False
-
-
-def read_switches(max_screens):
-    current = {}
-    for index in range(max_screens):
-        current.update({title: on for title, on, _ in p.switches()})
-        if index + 1 == max_screens or not p.scroll_more():
-            break
-    return current
-
-
-def close_named(names, page, max_screens=2):
-    """只关闭点名的开关；操作前确认目标存在，操作后回读，并检查其他开关未被改动。
-    开关标题可能附带整段说明，所以按关键词匹配，不做完整标题相等判断。"""
-    global VERIFIED_SWITCHES
-    p.top(max_screens)
-    before = read_switches(max_screens)
-    targets = [title for title in before if any(name in title for name in names)]
-    require_switches(before, names, page, contains=True)
-    p.top(max_screens)
-    p.off(only=names, page=page, max_screens=max_screens)
-    p.top(max_screens)
-    current = read_switches(max_screens)
-    require(all(current.get(title) is False for title in targets), f"{page}：回读未确认关闭")
-    require(all(current.get(title) == state for title, state in before.items() if title not in targets),
-            f"{page}：其他开关状态变化，请核对")
-    VERIFIED_SWITCHES += len(targets)
 
 
 HOT = ["推荐", "微博", "资讯", "全网", "影视", "音乐", "小说", "知乎", "精选"]

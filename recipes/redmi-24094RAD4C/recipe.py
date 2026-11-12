@@ -9,46 +9,6 @@ import time
 from entries import THEME_DEAD_ENDS
 
 
-def gear(toolbar_only=False):
-    """很多小米 App 的设置是右上角齿轮图标，没有文字。
-    匹配只认正好是「设置」的描述、正文或 setting 类 id：商店「我的」页有一行正文「去功能设置里
-    重新开启」，主题商店有「设置壁纸」，按包含匹配会先命中它们、点进别的子页，整段跑空（#305 / #374）。"""
-    from fast import bounds, icon_hit
-
-    for n in p.tree().iter("node"):
-        l, t, r, b = bounds(n)
-        icon = "ImageView" in n.get("class", "") and r-l < p.W * 0.25 and b-t < p.H * 0.15
-        if icon_hit(n) and (n.get("clickable") == "true" or icon) and p.on_screen(n) and (not toolbar_only or b < p.H * 0.23):
-            p.click((l + r) // 2, (t + b) // 2); time.sleep(1)
-            return True
-    if not toolbar_only and p.find("设置", exact=True, edge_ok="tab"):
-        return p.tap("设置", exact=True, scrolls=0)
-    for n in p.tree().iter("node"):
-        key = (n.get("content-desc") or "") + " " + (n.get("resource-id") or "")
-        from fast import bounds
-        l, t, r, b = bounds(n)
-        if any(k in key.lower() for k in ("更多", "more", "menu")) and n.get("clickable") == "true" and p.on_screen(n) and b < p.H * 0.22:
-            p.click((l + r) // 2, (t + b) // 2); time.sleep(0.5)
-            if p.tap("设置", exact=True, scrolls=0):
-                return True
-            break
-    return False
-
-
-def tap_tab(name):
-    """点顶部标签页；内层文字节点不可点，点外层的可点容器。"""
-    for n in p.tree().iter("node"):
-        if n.get("clickable") != "true":
-            continue
-        label = (n.get("text") or "") + (n.get("content-desc") or "")
-        from fast import bounds
-        l, t, r, b = bounds(n)
-        if name in label and t < p.H * 0.3 and p.on_screen(n):
-            p.click((l + r) // 2, (t + b) // 2); time.sleep(1)
-            return True
-    return p.tap(name, exact=True, scrolls=0)
-
-
 def tap_bottom_tab(name):
     """按屏幕底部标签栏找入口，避开内容区里同名的普通文字。"""
     from fast import bounds
@@ -71,11 +31,6 @@ def wait_bottom_tab(name, tries=5):
             return True
         time.sleep(0.8)
     return False
-
-
-def tap_any(*names, scrolls=6):
-    """依次试几个入口名，点中一个就返回 True。"""
-    return any(maybe(n, scrolls) for n in names)
 
 
 def close_with_plain_tap(names, page):

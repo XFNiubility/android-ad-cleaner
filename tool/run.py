@@ -2,6 +2,7 @@
 """肉呆去广告 · 总入口。所有命令都要带 -s <序列号>（adb devices 第一列）。
 
   python3 tool/run.py devices                      列出连着的手机、型号、系统版本、有没有现成机型脚本
+  python3 tool/run.py captures [目录]               只读：报失败现场（captures/）占了多少地方，由人手动清
   python3 tool/run.py -s 序列号 check              只读：锁屏、机型脚本匹配、广告包挂起状态
   python3 tool/run.py -s 序列号 ui-check           只读：检查手机读屏服务，不点击任何开关
   python3 tool/run.py -s 序列号 backup             改动前快照，存到 backups/<型号>-<时间>/
@@ -33,12 +34,16 @@ import adb_link
 import troubleshooting
 import wait
 from backups import Backups, root_from_env
+from captures import Captures, human_size
+from captures import root_from_env as capture_root
 from entries import FAMILY          # 品牌族只此一份；广告包、参考脚本与版本比较都按它归
 from host import ON_PHONE           # 手机版不写插电常亮（#731）
 from recipe_meta import recipe_meta
+import verify_ledger
 
 ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 TOOL = os.path.join(ROOT, "tool")
+RECIPES = os.path.join(ROOT, "recipes")
 BACKUPS = root_from_env() or os.path.join(ROOT, "backups")
 
 # 各品牌常见的系统广告包（快应用另列在 QUICKAPP）。只在机主同意后挂起；挂起可一条命令还原。
@@ -54,7 +59,7 @@ AD_PKGS = {
 # 选择页上默认勾上「挂起」的包（#973）。小米族的 msa 就是去广告目标本身，未挂起时
 # 默认勾上，省掉「首轮主题段被开屏窗抢前台 → 再跑一轮」；其他品牌的这一项要改锁屏 /
 # 服务，维持不勾。显式列包名而不是取 AD_PKGS 整族：给小米族加新包时先想清楚它该不该
-# 跟着默认勾上（tests/test_msa_default_973.py 守着）。
+# 跟着默认勾上（tests/test_plan.py 的 DefaultOnTableTests 守着）。
 DEFAULT_ON = frozenset({"com.miui.systemAdSolution", "com.miui.msa.global"})
 
 # 快应用组件：免安装的「轻 App」，广告常用 hap:// 链接把人跳进去。
@@ -605,6 +610,21 @@ def cmd_devices(rest):
     return 0
 
 
+def cmd_captures(rest):
+    """只读：报失败现场占了多少地方，由人手动清（失败现场不自动清理）。"""
+    root = rest[0] if rest else capture_root()
+    if not root:
+        return fail("没有捕获目录。图形客户端跑任务时会自动给；直接指定就写 captures <目录>"
+                    "（客户端的数据目录下有个 captures/）")
+    count, total = Captures(root).usage()
+    if not count:
+        print(f"没有失败现场：{root}")
+        return 0
+    print(f"{count} 份失败现场，共 {human_size(total)}：{root}\n"
+          "确认不再需要后可以整个删掉，程序不会自己清。")
+    return 0
+
+
 def cmd_ui_check(serial, rest):
     return py("fast.py", "-s", serial, "check")
 
@@ -935,9 +955,17 @@ def cmd_status_json(serial, rest):
         sus = suspended(serial, p)
         ads.append({"pkg": p, "suspended": sus, "default_on": (not sus) and p in DEFAULT_ON})
     backup = Backups(BACKUPS).latest(i["model"])
+    # 覆盖度（台账的 tier）、证据来源与验证日期由引擎从台账现读，客户端只透传（#1124）。台账里没有
+    # 这份脚本时 entry() 给「未记录 / 未知 / 空」，那是一个结论；台账文件本身读不出来是打包坏了，
+    # 照常报错。三样记的是将要跑的那份脚本：借同品牌参考脚本时就是被借那份的情况。日期之后脚本若
+    # 又改过，由 `tool/verify_ledger.py` 的「待复核」提示，不在这里体现。
+    ledger = verify_ledger.load(os.path.join(RECIPES, "verified.toml")) if r else {}
+    coverage, evidence, verified = verify_ledger.entry(
+        ledger, os.path.relpath(r, RECIPES).replace(os.sep, "/") if r else "")
     print(json.dumps({
         "info": i, "locked": locked(serial),
         "recipe": os.path.relpath(r, ROOT) if r else None, "recipe_ref": ref, "recipe_build": rb, "recipe_ok": ok, "steps": steps,
+        "recipe_coverage": coverage, "recipe_evidence": evidence, "recipe_verified": verified,
         "ads": ads, "quickapps": quickapps(serial),
         "stay_on": sh(serial, "settings get global stay_on_while_plugged_in"),
         "dev": sh(serial, "settings get global development_settings_enabled") == "1",
@@ -984,6 +1012,8 @@ def dispatch(a):
         print(__doc__); return 0
     if a[0] == "devices":
         return cmd_devices(a[1:])
+    if a[0] == "captures":
+        return cmd_captures(a[1:])
     if a[0] == "adapt":
         return py("adapt.py", *a[1:])
     # 以前 adb 在 import 期就解析，找不到时**任何**调用（含参数写错）都先报这一句；保留同样的先后。

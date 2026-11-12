@@ -1,5 +1,6 @@
 package com.ahuamiao.adcleaner.ui
 
+import android.util.Log
 import com.ahuamiao.adcleaner.Native
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateListOf
@@ -98,6 +99,9 @@ class AppModel(
         private set
     var updateSource by mutableStateOf("gitee")
     private var updateJob: Job? = null
+    private var smokeJob: Job? = null
+    private var smokeShellJob: Job? = null
+    private var smokeShell = ""
 
     /** 首次设置的三步与「第几步」都来自 view.py，页面和通知栏读同一份（#646）。 */
     var setup by mutableStateOf(SetupGuide())
@@ -608,6 +612,74 @@ class AppModel(
         begin(serial, plan)
     }
 
+    /**
+     * debug 构建的冒烟导出：每一步的结果打到 logcat（`src/debug/.../Demo.kt`，发布包没有调用方）。
+     * 内容与分块都在 `view.py` 的 `smoke_export` 里，这里只管节奏。
+     *
+     * 执行还在跑时每两秒导一次，脚本据此知道它没卡住；跑完或这一轮没起来就停。
+     */
+    internal fun debugSmoke() {
+        smokeJob?.cancel()
+        // 每轮重新判一次通道状态：配对可能在上一轮跑完之后才做完，缓存住的 need_pair 会一直拦下一轮（#1160）
+        smokeShell = ""
+        smokeShellJob?.cancel()
+        Log.i(SMOKE_ENTRY_TAG, "call smoke")
+        smokeJob = scope.launch {
+            askShellOnce()
+            val deadline = System.currentTimeMillis() + SMOKE_TIMEOUT
+            var idle = 0
+            while (true) {
+                val started = System.currentTimeMillis()
+                val out = runCatching {
+                    backend.boot()          // 冷启动时 Python 还没起来，等它
+                    backend.call("view.smoke_export", smokeShell) as JSONObject
+                }.onFailure { Log.i(SMOKE_ENTRY_TAG, "export failed: " + it.message) }.getOrNull()
+                Log.i(SMOKE_ENTRY_TAG, "export " + (if (out == null) "null" else "ok") +
+                    " in " + (System.currentTimeMillis() - started) + "ms")
+                if (out == null) {
+                    // 导出自己出错要说出来：不然脚本只看到「没有导出」，分不清是没跑起来还是 Python 侧报错
+                    runCatching { exportSmoke(listOf("""{"finished": false, "error": "smoke_export 调用失败"}""")) }
+                    idle = 2
+                } else {
+                    runCatching { exportSmoke(out.optJSONArray("chunks")?.strings() ?: emptyList()) }
+                        .onFailure { Log.i(SMOKE_ENTRY_TAG, "log failed: " + it.message) }
+                    if (out.optBoolean("finished")) {
+                        Log.i(SMOKE_ENTRY_TAG, "done")
+                        return@launch
+                    }
+                    // running 是 view.smoke_export 顶层给的；执行结果在 chunks 里，别去里面找
+                    idle = if (out.optBoolean("running")) 0 else idle + 1
+                    Log.i(SMOKE_ENTRY_TAG, "idle=$idle")
+                }
+                // 没在跑、也没有结果：这一轮没起来，别在这里空转；脚本等不到新导出会自己重敲入口
+                if (idle >= 2 || System.currentTimeMillis() > deadline) {
+                    Log.i(SMOKE_ENTRY_TAG, "stop idle=$idle")
+                    return@launch
+                }
+                delay(2000)
+            }
+        }
+    }
+
+    /**
+     * shell 状态每轮冒烟只在旁路算一次就存下来，导出循环一次都不等它：引擎跑着的时候那条通道被它
+     * 占着，问一次能等到整轮结束（`withTimeoutOrNull` 拦不住阻塞调用），导出就一条都发不出来（#1072 真机）。
+     */
+    private fun askShellOnce() {
+        if (smokeShell.isNotEmpty() || smokeShellJob?.isActive == true) return
+        smokeShellJob = scope.launch {
+            smokeShell = runCatching { backend.shellState() }.getOrDefault("")
+        }
+    }
+
+    /** `<组号> <块号>/<块数> <内容>`：组号取当下毫秒，脚本据此认出「这是新的一份」并按块拼回。 */
+    private fun exportSmoke(chunks: List<String>) {
+        val id = System.currentTimeMillis()
+        for ((index, chunk) in chunks.withIndex()) {
+            Log.i(SMOKE_TAG, "$id ${index + 1}/${chunks.size} $chunk")
+        }
+    }
+
     internal fun demoMode(mode: RunMode) {
         runMode = mode
     }
@@ -625,5 +697,11 @@ class AppModel(
     internal fun demoVersion(version: String, newer: NewVersion?) {
         this.version = version
         newVersion = newer
+    }
+
+    private companion object {
+        const val SMOKE_TAG = "AACSmoke"
+        const val SMOKE_ENTRY_TAG = "AACSmokeEntry"     // 只用来确认入口跑到了，不参与结果解析
+        const val SMOKE_TIMEOUT = 20 * 60 * 1000L
     }
 }

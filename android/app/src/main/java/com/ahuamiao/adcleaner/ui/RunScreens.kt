@@ -378,6 +378,17 @@ fun DoneScreen(model: AppModel, run: RunProgress) {
                 }
             }
             itemsIndexed(run.results) { i, r -> ResultRow(i, run.results.size, r) }
+            // 脚本验得不够时的一句话，判据与措辞都在后端（tool/coverage_note.py，#1188）
+            if (run.coverageNote.isNotEmpty()) {
+                item {
+                    Spacer(Modifier.height(16.dp))
+                    Segments {
+                        SegmentedListItem(shapes = ListItemDefaults.segmentedShapes(0, 1)) {
+                            Text(run.coverageNote, color = colors.onSurfaceVariant)
+                        }
+                    }
+                }
+            }
             if (run.recovery.isNotEmpty()) {
                 item {
                     Spacer(Modifier.height(16.dp))

@@ -3,6 +3,9 @@
 三个执行点注入同一份：`fast.execute` 的 run 分支、`adapt.check_draft`、`tests/fixtures.load_recipe`。
 不做成可 import 的函数：段包装要绑定当次的 Phone 与执行作用域，import 来的模块级函数拿不到这两个。
 脚本自己的同名定义后执行、覆盖注入的名字，所以在迁移之前跑任何现有脚本，用户看到的东西一个字节都不变。
+
+公共导航助手另住 `recipe_nav`、公共段体另住 `recipe_steps`：`preamble()` 写完生命周期与台账后
+依次调它们的 `install()`，本模块只管生命周期与台账（沿用 #1150 的注入面，#1209）。
 """
 
 import re
@@ -10,6 +13,8 @@ import time
 from contextlib import nullcontext
 
 import adb_link
+import recipe_nav
+import recipe_steps
 
 # 脚本自带 `RESULTS` 时，每个段的结局用这四个词记一条（机型脚本的分段结果台账）
 DONE, SKIPPED, FAILED, NOT_RUN = "完成", "跳过", "未完成", "未执行"
@@ -152,6 +157,7 @@ def preamble(p, g):
                 print("  · 未执行：前一段中止了整批", flush=True)
                 return action
             print(f"\n== {name}", flush=True)
+            p.screen.captures.step = name    # 失败现场按段归档（#1126）
             p.miss = 0
             started = time.monotonic()
             state = DONE
@@ -174,6 +180,7 @@ def preamble(p, g):
             except Exception as error:
                 g["FAILED_STEPS"].append(name)
                 state = FAILED
+                p.screen.save_capture()  # 这一段的失败现场（#1126）；探路留下的那张不算失败
                 if isinstance(error, ScreenLocked):
                     g["HALTED"] = True
                 print(f"  ✗ 未完成：{error}", flush=True)
@@ -191,4 +198,6 @@ def preamble(p, g):
     g.update({"SkipStep": SkipStep, "skip": skip, "require": require,
               "maybe": maybe, "start_or_skip": start_or_skip, "step": step, "page": page,
               "require_switches": require_switches, "skip_in_safe_mode": skip_in_safe_mode})
+    recipe_nav.install(p, g)
+    recipe_steps.install(p, g)
     return g

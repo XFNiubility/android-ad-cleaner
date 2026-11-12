@@ -19,7 +19,7 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "tool"))
 sys.path.insert(0, str(ROOT / "tests"))
 
-from fixtures import Clock, fake_phone, install_clock, load_recipe, phone_mock, phone_stub
+from fixtures import Clock, clocked, fake_phone, load_recipe, phone_mock, phone_stub
 import fast
 import run
 
@@ -78,7 +78,8 @@ class RecipeSelectionTests(unittest.TestCase):
         """BUILD 写细到 17.0.0.116，同族的 ColorOS 17 机型就借不到这份脚本（#319 / #483）。"""
         self.assertEqual(run.recipe_meta(RECIPE)["build"], "PMX110_17.0.0")
         path, ref = run.recipe_for("PJZ110", "OnePlus", {"build": "PJZ110_17.0.0.103(CN01)", "os": ""})
-        self.assertEqual(Path(path), RECIPE)
+        # 停在 17.0.0 的同代脚本不止一份时按目录名定先后（#969），选中哪份都算借到（#1138）
+        self.assertEqual(run.version_core(run.recipe_meta(path)["build"], "oppo"), "17.0.0")
         self.assertTrue(ref)
 
     def test_all_nine_segments_survive(self):
@@ -382,9 +383,7 @@ class MarketPrivacyEntryTests(unittest.TestCase):
 
     def test_neither_wording_keeps_the_page_scene(self):
         clock = Clock()
-        original = fast.time
-        install_clock(fast, clock)
-        self.addCleanup(setattr, fast, "time", original)
+        clocked(self, fast, clock)
         phone = fake_phone(clock=clock, stages=((0.0, self.market_page("个性化推荐")),),
                            focus=((0.0, self.SETTINGS),))
         lines = []

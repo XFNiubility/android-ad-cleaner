@@ -46,7 +46,7 @@
 
 迁移顺带带来的两处行为变化，记在这里，不归「锁屏」那一类：
 
-- **断线不再逐段记账。** 大多数本地副本把 `adb_link.DeviceLost` 当普通异常收进 `FAILED_STEPS` 后继续往下跑；注入的段包装在 #838 就定了「交还引擎、整轮停下」。迁移后全族统一为后者：退出码仍是 1，结果页看到整轮断线，而不是后面必然全灭的一串段名。守着旧行为的两条用例（`test_direct_entries_667`、`test_recipe_fast_entries_796`）改成断言异常上抛，它们原本要守的「断线不许当成入口改名去走菜单」不变。
+- **断线不再逐段记账。** 大多数本地副本把 `adb_link.DeviceLost` 当普通异常收进 `FAILED_STEPS` 后继续往下跑；注入的段包装在 #838 就定了「交还引擎、整轮停下」。迁移后全族统一为后者：退出码仍是 1，结果页看到整轮断线，而不是后面必然全灭的一串段名。守着旧行为的两条用例（`tests/test_entries.py` 的 `XiaomiTest.test_system_ads_falls_back_to_the_menu` 与 `PnmAdTrackingEntryTests.test_ad_tracking_falls_back_to_the_settings_search`）改成断言异常上抛，它们原本要守的「断线不许当成入口改名去走菜单」不变。
 - **`adapt gen` 的草稿不再带前导。** 草稿由 `adapt check` 自检时同样注入；留着本地副本，新写的脚本会把两代实现的坑重新挖一遍。
 
 守卫分两层，都在 `tests/test_recipe_preamble_migration.py`：结构层用 AST 禁止 43 份脚本再定义那六个名字（并检查 `adapt gen` 的草稿），行为层给每份脚本四个场景——跑前锁屏、首段失败、中途失败、中途锁屏——断言失败台账非空且退出码 1。跑在 `debd435` 的干净副本上，两个锁屏场景各 32 份红：26 份是票面说的那句「后面的都不跑」然后返回，5 份（PHK110 两个变体、PKX110、PKH110、RMX3700）把 lock 记进本地 `RESULTS` 后返回、退出码同样是 0，再加上 `honor-WKL-AN20`（本地段包装拿段名去查自己的 `CHANGES` 表，探针段名查不到、直接 `KeyError`）。`meizu-MEIZU 21 Pro` 迁移前就记了失败台账，是绿的。迁移后 43 份 × 4 场景全绿。
@@ -63,24 +63,24 @@
 「段体区分跳过与失败」的既有分工一致。落点从报错原文里取，不重新读前台：抛出之后再读有一小段
 窗口期，前台已经切走会判错。
 
-`tests/test_recipe_preamble_migration.py` 的禁定义名单随之加上这个名字。`tests/test_theme_unreachable_902.py`
+`tests/test_recipe_preamble_migration.py` 的禁定义名单随之加上这个名字。`tests/test_entries.py`
 守着三种落点与两个反例（别的 App 顶掉、断线），并逐份跑 15 份小米 / 红米主题脚本。
 
 ## #903 之后：注入面多一个 `require_switches`
 
 注入的名字从七个扩到八个：`require_switches(读到的开关, 名单, 页面, optional=(), contains=False)`。
 它顶替的是原本在 14 处机型脚本里各写一份的「点名开关没全部出现就整段不动」守卫，
-失败时的文案与判据不变，只在报错末尾补上 `Phone.page_evidence()` 的现场。
+失败时的文案与判据不变，只在报错末尾补上读屏基座 `Screen.page_evidence()` 的现场。
 
 为什么不放进引擎：名单是脚本对某台机某页的实测结论（哪几个开关必须一起在），
 引擎的 `off()` 只认 `only=` / `keep=` 的子串匹配，本来就不做「缺一项就整段不动」这个决定；
 把它搬进 `plan_switches()` 会让引擎替脚本判断一项缺失该不该停，那是 ADR-0008 分工的反向。
-页面证据反过来属于引擎——「停在哪个页、页面上有哪些开关」只有 `Phone` 读得到，
-所以 `page_evidence()` 在 `Phone` 上，`require_switches()` 只是把它接进报错。
+页面证据反过来属于引擎——「停在哪个页、页面上有哪些开关」只有读屏基座读得到，
+所以 `page_evidence()` 在 `Screen` 上（ADR-0033 之后门面只转发），`require_switches()` 只是把它接进报错。
 
 收成一处要守的是判据等价：小米系的 `contains=True`（标题可能附带整段说明）、
 PMX110 / PLZ110 的 `optional`（部分安装版本没有那一行）、honor 的「整页所有开关且空页算失败」
-都要原样保留；`tests/test_missing_switch_evidence_903.py` 守着三种输出（缺项 / 空页 / 通过）
+都要原样保留；`tests/test_recipe_kit.py` 守着三种输出（缺项 / 空页 / 通过）
 与「文案只在 `recipe_kit` 一处」，`tests/test_recipe_preamble_migration.py` 的禁定义名单随之加上这个名字。
 
 ## #909 之后：注入面多一个 `skip_in_safe_mode`
@@ -104,7 +104,7 @@ PKT110 与 RMX3700 的应用建议，honor-PNM-AN10 的广告跟踪 / 桌面文�
 假失败，但在安全模式下照样会点这些没点名过的行——与 `plan_switches` 的「只关点名的开关」相抵。
 两处都改成安全模式下直接返回并打一句说明；这一段里还关着点名开关，不能整段跳过。
 
-`tests/test_safe_mode_page_wide_909.py` 两头都守：行为上逐段跑一遍安全模式与非安全模式，
+`tests/test_recipe_kit.py` 的安全模式一组两头都守：行为上逐段跑一遍安全模式与非安全模式，
 结构上用 AST 认出「整段只做整页关闭」的段，要求它的第一句就是 `skip_in_safe_mode()`；
 判据本身另有一条用例（经助手间接整页关闭也算、混着点名开关的不算）。
 
@@ -130,7 +130,7 @@ PKT110 与 RMX3700 的应用建议，honor-PNM-AN10 的广告跟踪 / 桌面文�
 脚本侧要一起改的是「先试直达、失败再走菜单」的助手：它们按 `except RuntimeError` 收下
 「这条路不通」，跳过若被吞下，这一段会退化成走菜单后的空跑或假失败。判据只认类型
 （`except SkipStep: raise` 写在宽捕获之前），不按中文文案判。`start_or_skip()` 的说明同步改成
-「没装也上抛，由段包装记跳过」。`tests/test_missing_package_908.py` 守着三种结局、段级台账与
+「没装也上抛，由段包装记跳过」。`tests/test_recipe_kit.py` 守着三种结局、段级台账与
 整轮退出码，并逐段跑一份带该助手的参考脚本，确认它不再退到菜单那条路。
 
 ## #939 之后：注入面多一个 `page`
@@ -153,4 +153,136 @@ PKT110 与 RMX3700 的应用建议，honor-PNM-AN10 的广告跟踪 / 桌面文�
 失败是「没等到」而不是「到了但标题不对」，要不要一起改等这次形状定下来再议（#939 票面）。
 `tests/test_recipe_preamble_migration.py` 的禁定义名单加上这个名字，`ALLOWED` 只登记这两处例外——
 哪一份把本地 `page()` 迁到注入版，就把它的例外一起删掉，白名单回到空。
-`tests/test_page_evidence_939.py` 守三句文案只在 `recipe_kit` 一处，以及两份脚本报错与现场逐字同形。
+`tests/test_recipe_kit.py` 守三句文案只在 `recipe_kit` 一处，以及两份脚本报错与现场逐字同形。
+
+## #1150 之后：导航助手另立一个注入面
+
+前导之外还有一类重复：跨文件逐字相同的导航过程（设置齿轮、「更多」菜单回退、按名字逐个尝试
+的入口助手等）。它们也要引擎给一份、脚本删本地副本，但不属于生命周期与台账，于是另立
+`tool/recipe_nav.py`：一张 `NAV`（名字 → 工厂），`preamble()` 写完生命周期与台账后调
+`install(p, g)` 把它们写进同一个执行作用域。注入面按家族分节、沿用 #1148 的拆票逐批搬入；
+#1151 起收的是小米系五个簇（`tap_any` / `gear` / `read_switches` / `close_named` /
+`security_tab`）。三兄弟（23113RKC6C / 23117RK66C / 24122RKC7C）的 `gear` 与 23113RKC6C /
+24122RKC7C / 24129PN74C 那份不带 docstring 的 `tap_any` 与注入版不是逐字相同（排版、循环变量
+名有别），按判据不收，留在脚本里覆盖注入版。
+
+- **不并进 `recipe_kit`。** 前导管的是「一段怎么开始、怎么结束、失败记在哪」，导航助手管的是
+  「怎么走到那个页面」。混在一个模块里，两边的取舍互相牵制，`recipe_kit` 也不再是「只承担
+  生命周期与台账」的那一处。
+- **实现不 import `recipe_kit`。** `skip` / `require` 这类前导名字由工厂从 `g` 取、包进闭包，
+  依赖方向只有 `preamble()` → `install()` 一条，两个模块不会成环；实现因此也拿得到执行作用域
+  里的当前值，与段包装读 `g` 的口径一致。
+- **注入面全局、不按品牌选装。** 脚本作用域里多几个用不上的名字，代价小于让 `preamble()`
+  多认一个家族参数；同名多簇的脚本继续用本地定义覆盖注入版，机型差异留在原处。
+- **搬动要用调用序列对拍证明零漂移。** `tests/compare_recipe_calls.py` 以分支基点为基线，
+  把同一份脚本在基线与工作区各装载一次，比较脚本发出的调用（门面方法加 `p.d.shell`，方法名、
+  参数、顺序），`present` / `absent` 两个场景分别走主路径与备用分支。注入面为空时它必须零差异，
+  之后每搬一簇都用它出证据。空页面上只认特定控件或要点名开关的深支走不到，那部分不在对拍里
+  —— 搬那些簇的票要先把样本补进驱动，再谈零差异。
+- **守卫盯的是逐字副本。** `tests/test_recipe_nav.py` 按 AST 把脚本的模块级函数与注入面的实现
+  逐字比对，搬进一个簇而脚本没删副本即红；同名但写得不同的是机型知识，不报。比对前折算掉
+  搬动本身造成的两种改写（脚本全局 `X` → `g["X"]` 现取、随之消失的 `global X`），否则搬过来
+  的实现与被删的旧副本不再逐字相同，回滚或合并冲突把旧副本带回来时守卫会漏。
+
+## #1151 之后：小米系五簇
+
+- **闭包里对脚本全局的名字也按 `g` 现取。** `maybe` / `require_switches` 是前导名字，`time` /
+  `VERIFIED_SWITCHES` 是脚本自己的全局；搬进模块后一律 `g[...]` 查找，与原来在脚本里按全局名
+  解析等价，`tests/fixtures.load_recipe()` 换上的假时钟因此照旧生效（直接 import `time`
+  会让无设备用例真等）。
+- **`adapt gen` 的草稿不再自带 `read_switches` / `close_named`。** 草稿改用注入版之后，点名的
+  开关缺一个就整段报错、这一步记成失败，草稿与 `adapt check` 的 missing / pending 两份台账
+  一起删掉（报告只留「回读确认关闭」与「未完成步骤」，缺哪个开关在那一行的报错里）；这样新写出
+  的脚本不会把本地副本再带回来（#1151）。
+
+## #1152 之后：注入面首批搬入 vivo 两簇
+
+#1148 的拆票按家族分批搬入，vivo 是第一批。搬的是 `settings_home`（一条 `am start` 拉起设置
+首页）与 `browser_settings` 的「不含拉起 App」那一簇（走右上菜单进浏览器设置、点完核对落点）。
+脚本侧只删本地定义与随之空掉的 `from wait import until`，调用点一字未动。
+
+- **票面写两份、实际三处。** `browser_settings` 在 `recipes/vivo-V2547DA/` 下两个文件
+  （`recipe.py` 与 Android 17 变体）各有一份，加上 `V2303A` 共三份逐字相同。按「只搬逐字相同的
+  副本」收三份，票面的机型计数只当线索。`V2309A` 与 `V2547A` 的同名实现函数体写法不同，按
+  同名多簇留在脚本里。
+- **对拍与守卫照 #1150 的口径。** `tests/compare_recipe_calls.py` 对全量脚本零差异；
+  `tests/test_recipe_nav.py` 的逐字副本守卫在搬完后扫全仓无红。
+- **词库跟着重生成。** `tool/vocab.py` 的词条集合与方向不变，只有每条的脚本行号位移；
+  `tool/entries.py` 的入口速查逐字不变——搬走的两簇都不含 `used_by()` 认的那四类入口。
+
+## #1153 之后：OPPO 家族的导航过程与跨家族的 `tap`
+
+一加 / OPPO 这批搬进六簇：`wait_search_settings`（一加 PLR110、PYB110 与 OPPO PLP120 三份）、
+`settings_page`（PLR110、PYB110、PLP120 三份）、`tap_page`（一加 PHK110 与 OPPO PKH110 两份）、
+`open_app_settings`（PHK110、PKX110、PKH110 三份）、`browser_settings_direct`（同三份）、
+`tap`（一加 PJA110 与 vivo V2417A 两份）。
+
+- **判据从「文本逐字」改成「代码逐字」。** 副本守卫的 `normalize()` 现在先剥掉注释、docstring
+  与折行再做 AST 归一（`g["X"]` 折回 `X`、丢掉本地定义留下的 `global` 行），只比代码。注释与
+  文档串各写各的不算差异——同一段代码在两份脚本里被写下两次，就是该收的那种重复。
+- **同名不同实现分名字，不改「注入面不按品牌选装」这条定案。** `browser_settings` 已被 vivo 的
+  「右上菜单进设置」占用，OPPO 这一版是公开 Intent 直达，另起 `browser_settings_direct`；
+  三份脚本的调用点跟着改名（这是本批唯一改到的调用点，对拍仍证明调用序列零漂移）。
+- **新判据连带出两份此前判为「写法不同」的副本。** `vivo-V2309A` 的 `browser_settings`（#1152
+  当时按文本判为不同，实际只差注释）与 `oppo-PLP120` 的 `settings_page`（行内合并的那一版）
+  一起删掉，改走注入版。
+- **`entries.used_by()` 要认注入面。** 入口速查从脚本源码扫入口，定义搬走后
+  `open_app_settings` 里的 APP_SETTINGS Intent 与 `browser_settings_direct` 里的包名就不再出现在
+  脚本里，PHK110 与 PKX110 的「软件商店 / 浏览器」两条直达档会静默消失（各丢一台）。扫法改成：
+  脚本真调用了哪个注入名（按 AST 取裸名字，`p.tap(` 这类方法与注释里的同名都不算），就把那份
+  实现也扫一遍；另外 `open_app_settings(包名, 页面, …)` 与 `am start … -a <action> -p <包名>`
+  同记一档。
+- **`SEARCH_TITLES` 与 `wait_page` 仍是脚本侧的事实。** PLP120 的搜索页标题名单比一加两台长，
+  `wait_page` 各份代码同形但留在脚本里（它不在本票范围）；闭包从执行作用域现取这两个名字。
+- **对拍与守卫照 #1150 的口径。** `tests/compare_recipe_calls.py` 47 份 × 2 场景 13,484 条
+  调用零差异；词库重生成后只有行号位移，入口速查逐字不变。
+
+## #1154 之后：OPPO 两大对的成对簇
+
+PLZ110 / PMX110 与 PLG110 / PMA110 这两对各有一批代码逐字相同的导航过程，本批收进注入面
+十簇：前者八个（`open_page` / `app_settings` / `row` / `switch_signature` / `switch_top` /
+`system_settings` / `at_assistant` / `assistant_icon`），后者两个（`assistant_settings` /
+`carousel_choices`）。脚本侧只删本地定义，调用点一字未动。
+
+- **`app_settings` 与 `system_settings` 的第二簇留脚本。** 两个名字在两对里各自成簇：同一对里
+  逐字相同，跨对代码不同（PLZ110 那版是 `package` 推断标题、PLG110 那版把 `activity` / `title`
+  一起传进来）。注入面一个名字只能放一簇，收 PLZ110 / PMX110 那份，另一簇按「同名多簇一律留
+  脚本原样」继续覆盖注入版。
+- **`close_named` 没有搬，票面把它列进了范围。** 这个名字在注入面已经被小米系（#1151）占用，
+  PLZ110 / PMX110 那份带 `snapshot` / `optional`、代码不同——两条并列的结果只能是顶替：注入面
+  换成这份，四份已经把本地定义删掉的小米脚本会走错实现。按同一条「同名多簇」规则留在两份脚本
+  里，守卫本来也不会为代码不同的同名副本报红。
+- **`entries.used_by()` 要按调用方解析形参。** `app_settings(package)` 搬走后，`-p " + package`
+  的实参写在脚本里（`app_settings(MARKET)`）、形参在实现里，只扫实现一侧就还原不出包名，
+  PLZ110 / PMX110 会从「软件商店」那一档的「用过的机型」里静默消失、转进「可提速提示」。
+  扫法补一条：扫注入实现时把调用它的脚本源码一起带上，本文件里认不出的形参去调用方找实参；
+  脚本自己定义了同名实现的，注入版根本不被调用，那几份不再扫实现。
+- **对拍与守卫照 #1150 的口径。** `tests/compare_recipe_calls.py` 13,484 条调用零差异；
+  `tests/test_recipe_nav.py` 的副本守卫扫全仓无红；词库重生成后只有行号位移，入口速查逐字不变。
+
+## #1148 收尾：判据改到代码逐字之后剩下的簇
+
+#1148 的 30 簇是**文本逐字**口径下的账。判据在 #1153 改成代码逐字（剥注释、docstring 与折行）
+之后，有几段代码本来就在两份脚本里各写了一遍、只因注释不同而没进那 30 簇的重复露了出来，
+一直没人认领。这一轮把其中六个簇收进注入面：`wait_page`（一加 PHK110 与 OPPO PKH110）、
+`off_unnamed`（vivo V2303A 与 V2547DA 的 Android 17 变体）、`opened`（V2547DA 变体与小米
+M154FF / M332BF，跨家族）、`popup_row`（24129PN74C 的两份）、`tap_tab`（红米 24094RAD4C 与
+小米 24090RA29C）、`hide_carousel`（PLG110 / PMA110）。12 份脚本里删掉 13 处本地定义（V2547DA
+的 Android 17 变体一份里删了两处），调用点一字未动，注入实现与被删副本的 AST 归一结果逐字相同。
+
+- **`off_exact` 不收。** PHK110 / PKX110 那两份确实逐字相同，但函数体里的
+  `p.off(only=list(targets), …)` 是 `vocab.py` 的「未解析」台账要列的现场，搬走后
+  `docs/清单/词库.md` 会少两行。让词库去扫注入面不在 #1148 的范围里，所以这两份留在脚本里。
+- **第二簇照旧留脚本。** `hide_carousel` 的 PLZ110 / PMX110 那簇把单选控件读法写在函数体内、
+  与 PLG110 / PMA110 那份代码不同；`wait_page` 在 PKX110 与 PLG110 / PMA110 上也各成簇。
+  一个名字只放一簇，其余按「同名多簇是机型知识」继续覆盖注入版。
+- **闭包要靠脚本侧的名字就把那行留着。** `opened` 从执行作用域取 `adb_link`，M154FF / M332BF
+  的 `import adb_link` 因此必须留着（两条 import 上方各加一句指向注入版的注释），与 PLG/PMA
+  的 `from fast import bounds` 同形。24129PN74C 的 OS4 变体反过来：`until` 只被那份
+  `popup_row` 用，删定义时一起删掉 import。
+- **文件按家族分节、`install()` 落最后。** 五个节头：小米系 → vivo → OPPO 家族 → OPPO 两大对 →
+  其余·跨家族，`install()` 收尾；注入顺序变了但脚本按名字取，`NAV` 的插入顺序不构成行为。
+- **对拍与守卫照 #1150 的口径。** `tests/compare_recipe_calls.py` 47 份 × 2 场景 13,484 条调用
+  零差异；`tests/test_recipe_nav.py` 的副本守卫扫全仓无红；词库重生成后只有行号位移，入口速查
+  逐字不变。`hide_carousel` 与 `carousel_choices` 的单选按钮深支在空页面对拍里走不到，这一层
+  的证据是 AST 逐字相同，不是调用序列（同 #1154 的口径）。

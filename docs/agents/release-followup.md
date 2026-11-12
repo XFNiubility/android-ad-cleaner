@@ -1,8 +1,8 @@
 # 发版后复测清单
 
-[triage-labels.md](triage-labels.md) owns what `waiting-for-verify` means and what closes it; this file is the queue of what each release owes those issues.
+[triage-labels.md](triage-labels.md) owns what `waiting-for-verify` means, and [issue-tracker.md](issue-tracker.md) 的「票的生命周期」 owns what closes it; this file is the queue of what each release owes those issues.
 
-发版本身——跑验证、打 tag、写 Release 正文、同步 README / `index.html` / `latest.json` / Gitee——见 [release.md](release.md)。这份文件只管发版**之后**。
+发版本身——出包点（跑验证、打 tag）与发版动作（写 Release 正文、同步 README / `index.html` / `latest.json` / Gitee）——见 [release.md](release.md)。这份文件只管发版**之后**。
 
 ## 每次发版后照做
 
@@ -15,6 +15,8 @@
 
    只读时报出两类差异：**缺行**（标签里有、`## 当前队列` 的表里没有）与**过期行**（表里有、标签里没有，已关闭或已摘标）。退出码 `0` 一致、`1` 有差异、`2` 读不到标签或表格结构认不出。
 
+   带 `blocked-on-device` 的票不进队列：它们在等一台维护者没有的机器，催不动。工具既不给它们补缺行，也不报它们为过期行——已有行原样留着不删（删掉会连机型、修复版本与要观察的输出一起丢掉，与「一半过期的合列行不删」同一条取舍），报告里单列一行说明有几张被排除。票上出现新证据、摘掉标签后，原有行直接回到队列，不必重填。
+
    `--write` 把缺行按票号升序补到 `## 当前队列` 的第一张表末尾、把过期行从它实际所在的那张表删掉，写完再核对一遍，按核对结果定退出码。除了这两类行，其他内容逐字不动 —— 既有行不重排、不改格式，`###` 批次表只少掉被删的过期行，别的记录段原样保留；连跑两次不会再改。补出来的行只有票号与报告者（`| #N | @作者 | — | — | — |`），机型 / 版本 / 要观察的输出发版时现场填。
 
    一行登记多张票时（`#193 / #581`），只有全过期才删整行；只有一半过期时留着不动、退出码仍是 `1`（写回后仍不一致），那一行要人工判断是拆开还是改号。
@@ -23,7 +25,7 @@
 
 3. 在每条 issue 上留一条复测请求，`@` 报告者，写清装了哪个版本、要观察哪一句输出。模板见下。 <!-- rule:doc.release.followup-request-template -->
 
-4. 报告者确认后关闭 issue 并摘掉 `waiting-for-verify`；报告失败就摘标、改回 `needs-triage`，把日志当新证据重新归类。 <!-- rule:doc.release.followup-close-or-reopen -->
+4. 报告者确认后关闭 issue 并摘掉 `waiting-for-verify`；报告失败就摘标、改回 `needs-triage`，把日志当新证据重新归类。已经凭用例或有现场关掉的票按 [issue-tracker.md](issue-tracker.md) 的「凭证据关」处理，不必等到这一轮。 <!-- rule:doc.release.followup-close-or-reopen -->
 
 ## 复测请求模板
 
