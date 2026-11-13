@@ -31,14 +31,16 @@ def step_surface():
 
 
 def step_bodies(source):
-    """一份源码里带 `@step(...)` 的函数体：{函数名: 归一后的体}。"""
+    """一份源码里带 `@step(...)` 的函数体：{「函数名@定义行号」: 归一后的体}。
+
+    键要唯一：段体函数几乎都叫 `_`，按函数名做键会只剩最后一段，前面的副本看不见（#1210）。"""
     tree = ast.parse(normalize(source))
     out = {}
     for node in ast.walk(tree):
         if isinstance(node, ast.FunctionDef) and any(
                 isinstance(decorator, ast.Call) and isinstance(decorator.func, ast.Name)
                 and decorator.func.id == "step" for decorator in node.decorator_list):
-            out[node.name] = "\n".join(ast.unparse(stmt) for stmt in node.body)
+            out[f"{node.name}@{node.lineno}"] = "\n".join(ast.unparse(stmt) for stmt in node.body)
     return out
 
 
@@ -57,7 +59,8 @@ def offenders(scripts, injected):
     bodies = implementation_bodies(injected)
     out = {}
     for label, source in scripts:
-        dup = sorted(name for name, body in step_bodies(source).items() if body in bodies.values())
+        dup = sorted({key.split("@", 1)[0] for key, body in step_bodies(source).items()
+                      if body in bodies.values()})
         if dup:
             out[label] = dup
     return out
@@ -73,16 +76,37 @@ class WiringTests(unittest.TestCase):
 
     def test_every_registered_step_lands_in_the_scope(self):
         def factory(p, g):
-            def downloads():
+            def probe_step():
                 return p, g["skip"]
-            return downloads
+            return probe_step
 
-        with patch.dict(recipe_steps.STEPS, {"downloads": factory}):
+        with patch.dict(recipe_steps.STEPS, {"probe_step": factory}):
             phone, scope = phone_mock(), {}
             recipe_kit.preamble(phone, scope)
-            p, skip = scope["downloads"]()
+            p, skip = scope["probe_step"]()
         self.assertIs(p, phone)
         self.assertIs(skip, scope["skip"])
+
+    def test_the_xiaomi_family_steps_are_installed(self):
+        """#1210 收的 12 簇都在注入面里，同名多簇各占一个能看出差异的名字。"""
+        phone, scope = phone_mock(), {}
+        recipe_kit.preamble(phone, scope)
+        self.assertLessEqual({
+            "negative_screen", "global_search", "security_center", "theme",
+            "downloads", "downloads_probe", "downloads_tap",
+            "weather_calendar_tap", "weather_calendar_probe",
+            "store", "store_mode", "system_ads_security",
+        }, set(scope))
+
+    def test_the_vivo_family_steps_are_installed(self):
+        """#1211 收的 7 簇都在注入面里；两簇「系统广告」各占一个名字，没并成一个。"""
+        phone, scope = phone_mock(), {}
+        recipe_kit.preamble(phone, scope)
+        self.assertLessEqual({
+            "browser_recommendations", "i_manager_ads", "lock_screen_magazine",
+            "system_ads_branch", "system_ads_chain",
+            "global_search_ads", "weather_service",
+        }, set(scope))
 
     def test_step_names_do_not_collide_with_navigation_names(self):
         """两张注册表写同一个执行作用域、`injected_sources()` 又按名字合并：同名会静默覆盖。"""
@@ -103,15 +127,33 @@ class WiringTests(unittest.TestCase):
         import recipe_source
 
         def factory(p, g):
-            def downloads():
+            def probe_step():
                 p.off(only=["广告推荐"], page="下载管理·设置")
-            return downloads
+            return probe_step
 
-        with patch.dict(recipe_steps.STEPS, {"downloads": factory}):
-            self.assertIn("downloads", recipe_source.injected_sources())
-            self.assertIn("downloads", recipe_source.step_sources())
-        self.assertNotIn("downloads", recipe_source.step_sources())
+        with patch.dict(recipe_steps.STEPS, {"probe_step": factory}):
+            self.assertIn("probe_step", recipe_source.injected_sources())
+            self.assertIn("probe_step", recipe_source.step_sources())
+        self.assertNotIn("probe_step", recipe_source.step_sources())
         self.assertIn("open_app_settings", recipe_source.injected_sources())
+
+
+class CallerScopeTests(unittest.TestCase):
+    """段体按名字取的东西来自调用脚本的作用域：同一份实现，谁调就取谁的（#1212）。"""
+
+    def test_the_list_and_the_helper_come_from_the_caller(self):
+        """`STORE_PROMOTIONS` 与 `off_exact` 都留在脚本里；内联进实现会把两族的清单并成一份。"""
+        def run(names):
+            got = []
+            scope = {"open_app_settings": lambda *args: True,
+                     "tap_page": lambda *args: True,
+                     "off_exact": lambda items, page: got.append((items, page)) or True,
+                     "STORE_PROMOTIONS": names}
+            recipe_steps.STEPS["store_promotions"](phone_mock(), scope)()
+            return got
+
+        self.assertEqual(run(["甲"]), [(["甲"], "商店·推广入口")])
+        self.assertEqual(run(["乙", "丙"]), [(["乙", "丙"], "商店·推广入口")])
 
 
 class CopyGuardTests(unittest.TestCase):
@@ -170,6 +212,46 @@ def hot():
 '''
         self.assertEqual(offenders([("sample.py", script)], injected),
                          {"sample.py": ["hot"]})
+
+    def test_the_guard_reads_every_segment_not_just_the_last_one(self):
+        """段函数全都叫 `_`：按函数名收键会把整份脚本压成一个段体，非最后一个副本就漏了（#1213）。"""
+        injected = {"downloads": '''\
+def _():
+    p.off(only=["广告推荐"], page="下载管理·设置")
+'''}
+        script = '''\
+@step("下载管理")
+def _():
+    p.off(only=["广告推荐"], page="下载管理·设置")
+
+
+@step("手机管家")
+def _():
+    p.off(only=["安全推荐"], page="手机管家·设置")
+'''
+        self.assertEqual(offenders([("sample.py", script)], injected),
+                         {"sample.py": ["_"]})
+
+    def test_the_guard_ignores_type_annotations(self):
+        """实现上的注解是 mypy 严格档的产物，脚本副本不写：两者仍算同一段代码。
+
+        注解落在段体内的嵌套函数上（`theme_store_settings` 的 `reopen` 就是这一处）：
+        外层签名本来就不参与比对，只有这一条才证明归一确实剥了注解。"""
+        injected = {"downloads": '''\
+def downloads() -> None:
+    def reopen() -> None:
+        p.off(only=["广告推荐"], page="下载管理·设置")
+    reopen()
+'''}
+        script = '''\
+@step("下载管理")
+def _():
+    def reopen():
+        p.off(only=["广告推荐"], page="下载管理·设置")
+    reopen()
+'''
+        self.assertEqual(offenders([("sample.py", script)], injected),
+                         {"sample.py": ["_"]})
 
 
 if __name__ == "__main__":

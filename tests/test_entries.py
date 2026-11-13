@@ -25,6 +25,7 @@ import chan_fast  # noqa: E402
 import entries  # noqa: E402
 import fast  # noqa: E402
 import fixtures  # noqa: E402
+import recipe_source  # noqa: E402
 import row  # noqa: E402
 from fast import ScreenLocked  # noqa: E402
 from row import icon_hit  # noqa: E402
@@ -45,6 +46,19 @@ def _store_factory(p, g):
     def store():
         p.start(g["MARKET"], ".Main")
     return store
+
+
+def _browser_home_factory(p, g):
+    """段体只调导航助手：包名与页面名两层都在注入面里。"""
+    def browser_home():
+        return g["settings_direct"]()
+    return browser_home
+
+
+def _settings_direct_factory(p, g):
+    def settings_direct():
+        return g["open_app_settings"]("com.example.browser", "com.example.browser.Settings", "设置")
+    return settings_direct
 
 
 class SourceTest(unittest.TestCase):
@@ -178,6 +192,45 @@ class SourceTest(unittest.TestCase):
                 used = entries.used_by(d)
         self.assertEqual(used, {("direct", "com.example.market",
                                  "com.example.market.Main"): {"model"}})
+
+    def test_an_entry_two_hops_down_is_credited_to_the_caller(self):
+        """段体调导航助手、入口写在助手实现里（#1212）：只看脚本那一层会把调段体的机型漏掉。"""
+        import recipe_nav
+        import recipe_steps
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "oneplus-model"
+            model.mkdir()
+            (model / "recipe.py").write_text(
+                '@step("浏览器首页")\n'
+                'def _():\n'
+                '    browser_home()\n',
+                encoding="utf-8")
+            with patch.dict(recipe_steps.STEPS, {"browser_home": _browser_home_factory}), \
+                    patch.dict(recipe_nav.NAV, {"settings_direct": _settings_direct_factory}):
+                used = entries.used_by(d)
+        self.assertEqual(used, {("intent", "oppo.intent.action.APP_SETTINGS", "com.example.browser"):
+                                {"model"}})
+
+    def test_a_locally_defined_helper_two_hops_down_is_not_the_injected_one(self):
+        """脚本本地定义了段体要调的导航助手：注入版不在场上，第二层也不记出处（#1212）。"""
+        import recipe_nav
+        import recipe_steps
+        import tempfile
+        with tempfile.TemporaryDirectory() as d:
+            model = Path(d) / "oneplus-model"
+            model.mkdir()
+            (model / "recipe.py").write_text(
+                'def settings_direct():\n'
+                '    return False\n\n\n'
+                '@step("浏览器首页")\n'
+                'def _():\n'
+                '    browser_home()\n',
+                encoding="utf-8")
+            with patch.dict(recipe_steps.STEPS, {"browser_home": _browser_home_factory}), \
+                    patch.dict(recipe_nav.NAV, {"settings_direct": _settings_direct_factory}):
+                used = entries.used_by(d)
+        self.assertEqual(used, {})
 
     def test_open_app_settings_needs_two_arguments(self):
         """只传了包名的 open_app_settings 不算出处：把包名当成页面会给这台机凭空挂一条 Intent。"""
@@ -1499,12 +1552,27 @@ ID_SECURITY_305 = ('<node class="android.widget.TextView"'
 GEAR_CENTER_305 = (995, 165)
 
 
+def gear_users_1210():
+    """注入面里真的用上齿轮的实现名（沿用 #1151 的「注入那份也算」口径）。
+
+    判据走 `fixtures.normalize()`：`g["gear"]` 折回裸名、docstring 与注释都不剩，实现里提一句不算。"""
+    return {name for name, source in recipe_source.injected_sources().items()
+            if any((isinstance(node, ast.Name) and node.id == "gear")
+                   or (isinstance(node, ast.FunctionDef) and node.name == "gear")
+                   for node in ast.walk(ast.parse(fixtures.normalize(source))))}
+
+
 def hyperos_recipes_305():
-    """用了 gear() 的小米 / 红米机型脚本 —— 本地定义与引擎注入的那一份都算（#1151）。"""
+    """用了 gear() 的小米 / 红米机型脚本 —— 本地定义、注入助手与调用注入段体的都算（沿用 #1151 的口径）。
+
+    段体搬进注入面之后脚本正文里只剩 `theme()` 这类一行调用，按正文找 `gear(` 会把它们漏掉：
+    这一族用例照旧全绿，沿用 #305 的那批样本却再没有一条打到引擎那份实现。"""
+    gear_users = gear_users_1210()
     for path in sorted(ROOT.glob("recipes/*/recipe*.py")):
         if not path.parent.name.startswith(("xiaomi-", "redmi-")):
             continue
-        if "gear(" in path.read_text(encoding="utf-8"):
+        text = path.read_text(encoding="utf-8")
+        if "gear(" in text or any(f"{name}(" in text for name in gear_users):
             yield path
 
 
@@ -2498,20 +2566,48 @@ EMPTY_906 = """<hierarchy rotation="0">
 </hierarchy>"""
 
 
+def injected_step_1210(name):
+    """注入面里 `name` 的实现函数节点；没有这个名字返回 None（#1210）。
+
+    源码先过 `fixtures.normalize()`：`g["X"]` 折回 `X`，下面按裸名找 go / gear / require_switches 的守卫
+    才认得出注入实现里那几个调用。"""
+    source = recipe_source.injected_sources().get(name)
+    if source is None:
+        return None
+    factory = next((node for node in ast.parse(fixtures.normalize(source)).body
+                    if isinstance(node, ast.FunctionDef)), None)
+    if factory is None:
+        return None
+    return next((node for node in factory.body if isinstance(node, ast.FunctionDef)), None)
+
+
+def effective_step_body(node, defines=frozenset()):
+    """段体的有效 AST：脚本本地写的那份，或它转调的注入实现（#1210 起段体只留一行调用）。
+
+    `defines` 是这份脚本的模块级函数名：本地定义覆盖注入版，那种情况拿到的仍是脚本自己那份。"""
+    body = node.body
+    if len(body) == 1 and isinstance(body[0], ast.Expr) and isinstance(body[0].value, ast.Call):
+        func = body[0].value.func
+        if isinstance(func, ast.Name) and func.id not in defines:
+            return injected_step_1210(func.id) or node
+    return node
+
+
 def theme_steps_906():
-    """[(路径, 段函数)]：所有带 `@step("主题")` 的小米 / 红米脚本段。"""
+    """[(路径, 段函数)]：所有带 `@step("主题")` 的小米 / 红米脚本段；段体搬进注入面的给实现本身。"""
     found = []
     for path in sorted((ROOT / "recipes").glob("*/recipe*.py")):
         if entries.family(path.parent.name.split("-", 1)[0]) != "xiaomi":
             continue
         tree = ast.parse(path.read_text(encoding="utf-8"), filename=str(path))
+        defines = {node.name for node in tree.body if isinstance(node, ast.FunctionDef)}
         for node in tree.body:
             if not isinstance(node, ast.FunctionDef):
                 continue
             for dec in node.decorator_list:
                 if (isinstance(dec, ast.Call) and getattr(dec.func, "id", "") == "step"
                         and dec.args and getattr(dec.args[0], "value", None) == "主题"):
-                    found.append((path, node))
+                    found.append((path, effective_step_body(node, defines)))
     return found
 
 
